@@ -1,0 +1,2 @@
+"""DotaForumBot package."""
+
