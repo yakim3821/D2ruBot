@@ -21,11 +21,18 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     settings = Settings.from_env()
-    client = Dota2ForumClient(base_url=settings.base_url)
+    client = Dota2ForumClient(base_url=settings.base_url, session_file=settings.session_file)
 
     try:
-        client.login(settings.username, settings.password, remember=settings.remember_me)
-        print("Login successful. Session is authenticated.")
+        auth_mode = client.ensure_authenticated(
+            settings.username,
+            settings.password,
+            remember=settings.remember_me,
+        )
+        if auth_mode == "restored":
+            print(f"Session restored from {settings.session_file}. Session is authenticated.")
+        else:
+            print(f"Login successful. Session saved to {settings.session_file}.")
 
         if args.command == "send-test":
             if not settings.test_thread_url or not settings.test_message:

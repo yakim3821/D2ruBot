@@ -31,6 +31,7 @@ class Settings:
     password: str
     base_url: str
     remember_me: bool
+    session_file: str
     test_thread_url: str | None
     test_message: str | None
 
@@ -41,6 +42,7 @@ class Settings:
         base_url = os.getenv("DOTA2_FORUM_BASE_URL", "https://dota2.ru").strip().rstrip("/")
         remember_raw = os.getenv("DOTA2_FORUM_REMEMBER_ME", "true").strip().lower()
         remember_me = remember_raw in {"1", "true", "yes", "on"}
+        session_file = os.getenv("DOTA2_FORUM_SESSION_FILE", "session.json").strip() or "session.json"
         test_thread_url = os.getenv("DOTA2_FORUM_TEST_THREAD_URL", "").strip() or None
         test_message = os.getenv("DOTA2_FORUM_TEST_MESSAGE", "").strip() or None
 
@@ -49,6 +51,7 @@ class Settings:
             password=password,
             base_url=base_url,
             remember_me=remember_me,
+            session_file=session_file,
             test_thread_url=test_thread_url,
             test_message=test_message,
         )
