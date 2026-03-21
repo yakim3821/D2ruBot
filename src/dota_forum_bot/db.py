@@ -186,6 +186,112 @@ class Database:
         """
         return self._fetch_all(sql, (limit,))
 
+    def get_dashboard_status(self) -> dict[str, Any]:
+        sql = """
+        SELECT
+            (SELECT count(*) FROM topics) AS topics_total,
+            (SELECT count(*) FROM topics WHERE bot_replied_once = FALSE) AS topics_unreplied,
+            (
+                SELECT count(*)
+                FROM topics
+                WHERE bot_replied_once = FALSE
+                  AND is_closed = FALSE
+                  AND is_pinned = FALSE
+                  AND reply_not_before IS NOT NULL
+                  AND reply_not_before <= NOW()
+            ) AS topics_ready_to_reply,
+            (
+                SELECT count(*)
+                FROM topics
+                WHERE bot_replied_once = FALSE
+                  AND is_closed = FALSE
+                  AND is_pinned = FALSE
+                  AND reply_not_before IS NOT NULL
+                  AND reply_not_before > NOW()
+            ) AS topics_waiting_delay,
+            (SELECT count(*) FROM bot_replies) AS bot_replies_total,
+            (SELECT count(*) FROM bot_replies WHERE status = 'llm_auto_published') AS bot_auto_published
+        """
+        rows = self._fetch_all(sql, ())
+        return rows[0] if rows else {}
+
+    def get_waiting_topics(self, limit: int = 50) -> list[dict[str, Any]]:
+        sql = """
+        SELECT
+            forum_topic_id,
+            title,
+            topic_url,
+            forum_reply_count,
+            reply_not_before,
+            created_at_forum,
+            first_seen_at
+        FROM topics
+        WHERE bot_replied_once = FALSE
+          AND is_closed = FALSE
+          AND is_pinned = FALSE
+          AND reply_not_before IS NOT NULL
+          AND reply_not_before > NOW()
+        ORDER BY reply_not_before ASC
+        LIMIT %s
+        """
+        return self._fetch_all(sql, (limit,))
+
+    def get_ready_topics(self, limit: int = 50) -> list[dict[str, Any]]:
+        sql = """
+        SELECT
+            forum_topic_id,
+            title,
+            topic_url,
+            forum_reply_count,
+            reply_not_before,
+            created_at_forum,
+            first_seen_at
+        FROM topics
+        WHERE bot_replied_once = FALSE
+          AND is_closed = FALSE
+          AND is_pinned = FALSE
+          AND reply_not_before IS NOT NULL
+          AND reply_not_before <= NOW()
+        ORDER BY reply_not_before ASC
+        LIMIT %s
+        """
+        return self._fetch_all(sql, (limit,))
+
+    def get_recent_bot_replies(self, limit: int = 50) -> list[dict[str, Any]]:
+        sql = """
+        SELECT
+            br.created_at,
+            br.forum_topic_id,
+            t.title,
+            br.target_type,
+            br.target_url,
+            br.status,
+            LEFT(br.reply_text, 280) AS reply_preview
+        FROM bot_replies br
+        LEFT JOIN topics t ON t.forum_topic_id = br.forum_topic_id
+        ORDER BY br.created_at DESC
+        LIMIT %s
+        """
+        return self._fetch_all(sql, (limit,))
+
+    def get_recent_failures(self, limit: int = 50) -> list[dict[str, Any]]:
+        sql = """
+        SELECT
+            br.created_at,
+            br.forum_topic_id,
+            t.title,
+            br.target_type,
+            br.status,
+            br.error_message
+        FROM bot_replies br
+        LEFT JOIN topics t ON t.forum_topic_id = br.forum_topic_id
+        WHERE br.error_message IS NOT NULL
+           OR br.status LIKE '%%failed%%'
+        ORDER BY br.created_at DESC
+        LIMIT %s
+        """
+        return self._fetch_all(sql, (limit,))
+
     def topic_needs_reply_schedule(self, forum_topic_id: int) -> bool:
         sql = """
         SELECT reply_not_before

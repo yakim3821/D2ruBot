@@ -9,6 +9,7 @@ from .db import Database
 from .exceptions import ForumBotError
 from .llm_client import LLMClient
 from .services import ForumSyncService
+from .ui import run_ui_server
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -68,6 +69,13 @@ def build_parser() -> argparse.ArgumentParser:
     worker_parser.add_argument("--interval", type=int, default=30, help="Seconds between cycles and retry delay after errors.")
     worker_parser.add_argument("--max-age-days", type=int, default=3, help="Reply only to topics not older than this many days.")
     worker_parser.add_argument("--batch-limit", type=int, default=5, help="Maximum number of fresh topics to process per cycle.")
+
+    ui_parser = subparsers.add_parser(
+        "run-ui",
+        help="Run optional local web UI for command запуск, logs, and worker status.",
+    )
+    ui_parser.add_argument("--host", default="127.0.0.1", help="Bind host for the UI server.")
+    ui_parser.add_argument("--port", type=int, default=8080, help="Bind port for the UI server.")
     return parser
 
 
@@ -75,6 +83,18 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     settings = Settings.from_env()
+
+    if args.command == "run-ui":
+        try:
+            run_ui_server(settings=settings, host=args.host, port=args.port)
+            return 0
+        except ForumBotError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        except KeyboardInterrupt:
+            print("Stopped by user.")
+            return 0
+
     client = Dota2ForumClient(base_url=settings.base_url, session_file=settings.session_file)
     db = Database(settings.db_settings())
     service = ForumSyncService(client=client, db=db)

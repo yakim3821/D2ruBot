@@ -4,10 +4,11 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="63386f1a-d5f6-4c51-aa31-f06c006e8555" name="Changes" comment="задержка">
+    <list default="true" id="63386f1a-d5f6-4c51-aa31-f06c006e8555" name="Changes" comment="фикс">
+      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/parsers.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/parsers.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/services.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/services.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/cli.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/cli.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/db.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/db.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -77,7 +78,7 @@
       <updated>1768072373018</updated>
       <workItem from="1768072375584" duration="2918000" />
       <workItem from="1768075867204" duration="7000" />
-      <workItem from="1774043544193" duration="24840000" />
+      <workItem from="1774043544193" duration="31773000" />
     </task>
     <task id="LOCAL-00001" summary="Start">
       <option name="closed" value="true" />
@@ -119,7 +120,15 @@
       <option name="project" value="LOCAL" />
       <updated>1774065149494</updated>
     </task>
-    <option name="localTasksCounter" value="6" />
+    <task id="LOCAL-00006" summary="фикс">
+      <option name="closed" value="true" />
+      <created>1774088492256</created>
+      <option name="number" value="00006" />
+      <option name="presentableId" value="LOCAL-00006" />
+      <option name="project" value="LOCAL" />
+      <updated>1774088492257</updated>
+    </task>
+    <option name="localTasksCounter" value="7" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -142,6 +151,7 @@
     <MESSAGE value="роадмап" />
     <MESSAGE value="final" />
     <MESSAGE value="задержка" />
-    <option name="LAST_COMMIT_MESSAGE" value="задержка" />
+    <MESSAGE value="фикс" />
+    <option name="LAST_COMMIT_MESSAGE" value="фикс" />
   </component>
 </project>
