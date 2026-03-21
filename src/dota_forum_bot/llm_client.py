@@ -68,3 +68,62 @@ class LLMClient:
         if not output_text:
             raise ForumBotError("DeepSeek returned an empty response.")
         return output_text
+
+    def generate_taverna_daily_summary(
+        self,
+        summary_date: str,
+        topics_payload: list[dict],
+    ) -> str:
+        if not topics_payload:
+            raise ForumBotError("No topic data was provided for daily summary generation.")
+
+        system_prompt = (
+            "Ты пишешь итоговый пост для форума dota2.ru в разделе Таверна. "
+            "Нужно сделать живую, читаемую сводку за последние сутки по свежим темам. "
+            "Пиши по-русски, естественно, без канцелярита и без упоминания ИИ. "
+            "Соблюдай точный BBCode-формат: короткое вступление, затем по одному SPOILER на тему, затем блок 'Итоги дня'. "
+            "Каждый спойлер обязан содержать 4 части в таком виде: "
+            "1) первый абзац без заголовка, сразу краткое содержание темы; "
+            "2) второй абзац без заголовка, о чем писали пользователи; "
+            "3) третий абзац без заголовка, интересные моменты; "
+            "4) отдельный блок с заголовком 'Самые популярные комментарии:' и списком комментариев по строкам. "
+            "Фразы-заголовки 'Краткое содержание темы', 'Краткое содержание о чем писали юзеры', 'Интересные моменты' писать нельзя. "
+            "Между абзацами внутри спойлера обязательно оставляй пустую строку. "
+            "Не используй markdown-кодблоки. Не выдумывай темы и факты вне переданных данных. "
+            "Если комментарий токсичный, передай смысл мягче и нейтральнее."
+        )
+
+        user_prompt = (
+            f"Дата публикации: {summary_date}\n\n"
+            "Верни только готовый текст поста в таком формате:\n"
+            "Вступительный текст...\n"
+            '[SPOILER=\"Название темы\"]\n'
+            "Первый абзац без заголовка\n\n"
+            "Второй абзац без заголовка\n\n"
+            "Третий абзац без заголовка\n\n"
+            "Самые популярные комментарии:\n"
+            "user: comment\n"
+            "user: comment\n"
+            "[/SPOILER]\n"
+            "...\n"
+            "Итоги дня\n\n"
+            f"Данные по темам:\n{json.dumps(topics_payload, ensure_ascii=False)}"
+        )
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=2200,
+            temperature=0.6,
+        )
+
+        output_text = ""
+        if response.choices:
+            message = response.choices[0].message
+            output_text = (message.content or "").strip()
+        if not output_text:
+            raise ForumBotError("DeepSeek returned an empty daily summary.")
+        return output_text

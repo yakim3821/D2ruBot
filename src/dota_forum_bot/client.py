@@ -327,6 +327,53 @@ class Dota2ForumClient:
 
         raise MessageSendError(f"Forum rejected topic reply: {data}")
 
+    def create_topic(
+        self,
+        forum_id: int,
+        title: str,
+        content: str,
+        subscribe: bool = True,
+        prefix: int = -1,
+        pinned: bool = False,
+        poll_data: dict | None = None,
+        referer_url: str | None = None,
+    ) -> dict:
+        if not title.strip():
+            raise MessageSendError("Topic title is empty.")
+        if not content.strip():
+            raise MessageSendError("Topic content is empty.")
+
+        response = self._request(
+            urljoin(self.base_url, "/forum/api/forum/createForumTopic"),
+            method="POST",
+            json_data={
+                "forum": forum_id,
+                "title": title.strip(),
+                "content": content.strip(),
+                "pollData": poll_data or {"question": "", "variants": [], "multiple": False},
+                "subscribe": 1 if subscribe else 0,
+                "prefix": prefix,
+                "pinned": pinned,
+            },
+            headers={
+                "Origin": self.base_url,
+                "Referer": referer_url or self.forum_base_url,
+                "X-Requested-With": "XMLHttpRequest",
+            },
+        )
+
+        try:
+            data = json.loads(response.text)
+        except json.JSONDecodeError as exc:
+            raise MessageSendError(
+                f"Topic creation returned non-JSON response. HTTP {response.status}: {response.text[:300]}"
+            ) from exc
+
+        status = data.get("status")
+        if status in {"success", "moderation"}:
+            return data
+        raise MessageSendError(f"Forum rejected topic creation: {data}")
+
     def _extract_reply_form(self, html: str, page_url: str):
         parser = ReplyFormParser()
         parser.feed(html)

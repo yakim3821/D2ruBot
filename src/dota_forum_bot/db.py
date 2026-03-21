@@ -357,6 +357,44 @@ class Database:
         """
         return self._fetch_all(sql, (max_age_days, limit))
 
+    def get_topics_created_since(
+        self,
+        hours: int,
+        forum_section_id: int | None = None,
+        exclude_pinned: bool = True,
+        exclude_closed: bool = True,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        filters = [
+            "COALESCE(t.created_at_forum, t.first_seen_at) >= NOW() - (%s * INTERVAL '1 hour')",
+        ]
+        params: list[Any] = [hours]
+        if forum_section_id is not None:
+            filters.append("t.forum_section_id = %s")
+            params.append(forum_section_id)
+        if exclude_pinned:
+            filters.append("t.is_pinned = FALSE")
+        if exclude_closed:
+            filters.append("t.is_closed = FALSE")
+        params.append(limit)
+
+        sql = f"""
+        SELECT
+            t.forum_topic_id,
+            t.title,
+            t.topic_url,
+            t.created_at_forum,
+            t.first_seen_at,
+            t.forum_reply_count,
+            t.is_closed,
+            t.is_pinned
+        FROM topics t
+        WHERE {' AND '.join(filters)}
+        ORDER BY COALESCE(t.created_at_forum, t.first_seen_at) DESC
+        LIMIT %s
+        """
+        return self._fetch_all(sql, tuple(params))
+
     def set_topic_reply_schedule(self, forum_topic_id: int, reply_not_before, reply_skip_reason: str | None = None) -> None:
         sql = """
         UPDATE topics
@@ -643,6 +681,116 @@ class Database:
         rows = self._fetch_all(sql, (forum_user_id,))
         return rows[0] if rows else None
 
+    def get_daily_summary_schedule(self) -> dict[str, Any]:
+        sql = """
+        SELECT enabled, schedule_time, updated_at
+        FROM scheduler_settings
+        WHERE key = 'daily_summary'
+        LIMIT 1
+        """
+        rows = self._fetch_all(sql, ())
+        if rows:
+            return rows[0]
+        return {"enabled": False, "schedule_time": "12:00", "updated_at": None}
+
+    def set_daily_summary_schedule(self, enabled: bool, schedule_time: str) -> None:
+        sql = """
+        INSERT INTO scheduler_settings (key, enabled, schedule_time, updated_at)
+        VALUES ('daily_summary', %s, %s, NOW())
+        ON CONFLICT (key) DO UPDATE
+        SET enabled = EXCLUDED.enabled,
+            schedule_time = EXCLUDED.schedule_time,
+            updated_at = NOW()
+        """
+        self._execute(sql, (enabled, schedule_time))
+
+    def get_daily_summary_run(self, summary_date) -> dict[str, Any] | None:
+        sql = """
+        SELECT
+            summary_date,
+            status,
+            scheduled_time,
+            topic_title,
+            topic_url,
+            source_topic_count,
+            summary_text,
+            error_message,
+            created_at,
+            updated_at
+        FROM daily_summary_runs
+        WHERE summary_date = %s
+        LIMIT 1
+        """
+        rows = self._fetch_all(sql, (summary_date,))
+        return rows[0] if rows else None
+
+    def upsert_daily_summary_run(
+        self,
+        summary_date,
+        status: str,
+        scheduled_time: str | None = None,
+        topic_title: str | None = None,
+        topic_url: str | None = None,
+        source_topic_count: int = 0,
+        summary_text: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        sql = """
+        INSERT INTO daily_summary_runs (
+            summary_date,
+            status,
+            scheduled_time,
+            topic_title,
+            topic_url,
+            source_topic_count,
+            summary_text,
+            error_message,
+            created_at,
+            updated_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+        ON CONFLICT (summary_date) DO UPDATE
+        SET status = EXCLUDED.status,
+            scheduled_time = COALESCE(EXCLUDED.scheduled_time, daily_summary_runs.scheduled_time),
+            topic_title = COALESCE(EXCLUDED.topic_title, daily_summary_runs.topic_title),
+            topic_url = COALESCE(EXCLUDED.topic_url, daily_summary_runs.topic_url),
+            source_topic_count = EXCLUDED.source_topic_count,
+            summary_text = COALESCE(EXCLUDED.summary_text, daily_summary_runs.summary_text),
+            error_message = EXCLUDED.error_message,
+            updated_at = NOW()
+        """
+        self._execute(
+            sql,
+            (
+                summary_date,
+                status,
+                scheduled_time,
+                topic_title,
+                topic_url,
+                source_topic_count,
+                summary_text,
+                error_message,
+            ),
+        )
+
+    def get_recent_daily_summary_runs(self, limit: int = 10) -> list[dict[str, Any]]:
+        sql = """
+        SELECT
+            summary_date,
+            status,
+            scheduled_time,
+            topic_title,
+            topic_url,
+            source_topic_count,
+            error_message,
+            created_at,
+            updated_at
+        FROM daily_summary_runs
+        ORDER BY summary_date DESC, updated_at DESC
+        LIMIT %s
+        """
+        return self._fetch_all(sql, (limit,))
+
     def ensure_runtime_schema(self) -> None:
         statements = [
             """
@@ -675,6 +823,34 @@ class Database:
             """
             ALTER TABLE topics
             ADD COLUMN IF NOT EXISTS reply_skip_reason TEXT
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS scheduler_settings (
+                key TEXT PRIMARY KEY,
+                enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                schedule_time TEXT NOT NULL DEFAULT '12:00',
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS daily_summary_runs (
+                id BIGSERIAL PRIMARY KEY,
+                summary_date DATE NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                scheduled_time TEXT,
+                topic_title TEXT,
+                topic_url TEXT,
+                source_topic_count INTEGER NOT NULL DEFAULT 0,
+                summary_text TEXT,
+                error_message TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            INSERT INTO scheduler_settings (key, enabled, schedule_time, updated_at)
+            VALUES ('daily_summary', FALSE, '12:00', NOW())
+            ON CONFLICT (key) DO NOTHING
             """,
         ]
         with self._connect() as conn:

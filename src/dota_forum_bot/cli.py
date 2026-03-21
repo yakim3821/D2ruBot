@@ -70,6 +70,20 @@ def build_parser() -> argparse.ArgumentParser:
     worker_parser.add_argument("--max-age-days", type=int, default=3, help="Reply only to topics not older than this many days.")
     worker_parser.add_argument("--batch-limit", type=int, default=5, help="Maximum number of fresh topics to process per cycle.")
 
+    daily_summary_parser = subparsers.add_parser(
+        "publish-daily-summary",
+        help="Build and publish a daily Taverna summary thread for topics from the last 24 hours.",
+    )
+    daily_summary_parser.add_argument("--lookback-hours", type=int, default=24, help="How many past hours to include.")
+    daily_summary_parser.add_argument("--force", action="store_true", help="Publish even if today's summary run already exists.")
+
+    daily_summary_worker_parser = subparsers.add_parser(
+        "run-daily-summary-worker",
+        help="Run a background worker that publishes one Taverna summary thread per day at the configured UI time.",
+    )
+    daily_summary_worker_parser.add_argument("--interval", type=int, default=30, help="Seconds between schedule checks.")
+    daily_summary_worker_parser.add_argument("--lookback-hours", type=int, default=24, help="How many past hours to include.")
+
     ui_parser = subparsers.add_parser(
         "run-ui",
         help="Run optional local web UI for command запуск, logs, and worker status.",
@@ -204,6 +218,38 @@ def main() -> int:
                 poll_interval_seconds=args.interval,
                 max_age_days=args.max_age_days,
                 batch_limit=args.batch_limit,
+            )
+        elif args.command == "publish-daily-summary":
+            llm = LLMClient(
+                api_key=settings.deepseek_api_key,
+                model=settings.deepseek_model,
+                base_url=settings.deepseek_base_url,
+            )
+            result = service.publish_daily_taverna_summary(
+                llm=llm,
+                lookback_hours=args.lookback_hours,
+                force=args.force,
+            )
+            print(
+                f"Daily summary finished: status={result.status}, "
+                f"topics={result.topics_selected}, url={result.topic_url or '-'}"
+            )
+            for detail in result.details:
+                print(detail)
+        elif args.command == "run-daily-summary-worker":
+            llm = LLMClient(
+                api_key=settings.deepseek_api_key,
+                model=settings.deepseek_model,
+                base_url=settings.deepseek_base_url,
+            )
+            print(
+                f"Daily summary worker started: interval={args.interval}s, "
+                f"lookback_hours={args.lookback_hours}"
+            )
+            service.run_daily_summary_worker(
+                llm=llm,
+                poll_interval_seconds=args.interval,
+                lookback_hours=args.lookback_hours,
             )
 
         return 0

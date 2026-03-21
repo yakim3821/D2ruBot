@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -50,6 +51,36 @@ class PostRecord:
 class TopicPageRecord:
     topic: TopicRecord
     first_post: PostRecord
+
+
+@dataclass
+class PostReactionRecord:
+    smile_id: int
+    title: str
+    count: int
+
+
+@dataclass
+class TopicThreadPostRecord:
+    forum_post_id: int
+    forum_topic_id: int
+    author: ForumUserRecord | None
+    post_url: str | None
+    content_raw: str
+    content_text: str
+    created_at_forum: datetime | None
+    post_number: int | None
+    reactions: list[PostReactionRecord]
+    total_reaction_count: int
+    positive_reaction_count: int
+
+
+@dataclass
+class TopicThreadPageRecord:
+    topic: TopicRecord
+    posts: list[TopicThreadPostRecord]
+    current_page: int
+    total_pages: int
 
 
 @dataclass
@@ -175,10 +206,9 @@ def _parse_taverna_topic_blocks(list_html: str) -> list[TopicRecord]:
 
 
 def parse_topic_page(topic_url: str, topic_html: str) -> TopicPageRecord:
-    topic_id_match = re.search(r"/threads/[^/]+\.(\d+)/?$", topic_url)
-    if not topic_id_match:
+    topic_id = _extract_topic_id_from_url(topic_url)
+    if topic_id is None:
         raise ValueError(f"Unable to parse topic id from URL: {topic_url}")
-    topic_id = int(topic_id_match.group(1))
 
     title = _extract_meta_title(topic_html) or _extract_html_title(topic_html) or f"Topic {topic_id}"
     author = _extract_first_user(topic_html)
@@ -210,6 +240,34 @@ def parse_topic_page(topic_url: str, topic_html: str) -> TopicPageRecord:
     )
 
     return TopicPageRecord(topic=topic, first_post=post)
+
+
+def parse_topic_thread_page(topic_url: str, topic_html: str) -> TopicThreadPageRecord:
+    topic_id = _extract_topic_id_from_url(topic_url)
+    if topic_id is None:
+        raise ValueError(f"Unable to parse topic id from URL: {topic_url}")
+
+    title = _extract_meta_title(topic_html) or _extract_html_title(topic_html) or f"Topic {topic_id}"
+    posts = _extract_topic_thread_posts(topic_id=topic_id, html_text=topic_html)
+    topic_author = posts[0].author if posts else _extract_first_user(topic_html)
+
+    topic = TopicRecord(
+        forum_topic_id=topic_id,
+        forum_section_id=6,
+        title=title,
+        topic_url=_normalize_topic_url(topic_url),
+        author=topic_author,
+        created_at_forum=posts[0].created_at_forum if posts else None,
+        forum_reply_count=max(0, len(posts) - 1),
+        is_closed="closedtopic" in topic_html.lower() or "РґР°РЅРЅР°СЏ С‚РµРјР° Р·Р°РєСЂС‹С‚Р°" in topic_html.lower(),
+        is_pinned="sticky" in topic_html.lower() or "Р·Р°РєСЂРµРї" in topic_html.lower(),
+    )
+    return TopicThreadPageRecord(
+        topic=topic,
+        posts=posts,
+        current_page=_extract_current_page(topic_url),
+        total_pages=_extract_total_pages(topic_html),
+    )
 
 
 def parse_profile_posts_page(profile_user_id: int, profile_username: str, page_url: str, html_text: str) -> list[UserProfilePostRecord]:
@@ -405,8 +463,171 @@ def _html_to_text(raw_html: str) -> str:
     return _normalize_space(html.unescape(text.replace("\xa0", " ")))
 
 
+def _extract_topic_thread_posts(topic_id: int, html_text: str) -> list[TopicThreadPostRecord]:
+    posts: list[TopicThreadPostRecord] = []
+    blocks = _extract_topic_post_blocks(html_text)
+
+    for block in blocks:
+        post_id_match = re.search(r'<div id="post-(\d+)"', block)
+        if not post_id_match:
+            continue
+
+        post_id = int(post_id_match.group(1))
+        author = _extract_author_from_post_block(block)
+        created_at = _extract_post_created_at(block)
+        post_url = _extract_post_url(block)
+        post_number = _extract_post_number(block)
+        content_raw = _extract_post_content_html(block)
+        content_text = _html_to_text(content_raw)
+        reactions = _extract_post_reactions(block)
+
+        posts.append(
+            TopicThreadPostRecord(
+                forum_post_id=post_id,
+                forum_topic_id=topic_id,
+                author=author,
+                post_url=post_url,
+                content_raw=content_raw,
+                content_text=content_text,
+                created_at_forum=created_at,
+                post_number=post_number,
+                reactions=reactions,
+                total_reaction_count=sum(item.count for item in reactions),
+                positive_reaction_count=sum(
+                    item.count for item in reactions if "dislike" not in item.title.lower()
+                ),
+            )
+        )
+
+    return posts
+
+
+def _extract_topic_post_blocks(html_text: str) -> list[str]:
+    starts = list(re.finditer(r'<div id="post-(\d+)"[^>]*class="[^"]*forum-theme__item[^"]*"', html_text))
+    blocks: list[str] = []
+    for index, match in enumerate(starts):
+        start = match.start()
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(html_text)
+        blocks.append(html_text[start:end])
+    return blocks
+
+
+def _extract_author_from_post_block(block: str) -> ForumUserRecord | None:
+    match = re.search(
+        r'data-user-id="(\d+)"\s+data-username="([^"]+)"',
+        block,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        profile_match = re.search(r'href="([^"]*members/[^"]+?\.\d+/?)"', block)
+        return ForumUserRecord(
+            forum_user_id=int(match.group(1)),
+            username=html.unescape(match.group(2)),
+            profile_url=_to_absolute_url(profile_match.group(1)) if profile_match else None,
+        )
+    return _extract_user_from_context(block)
+
+
+def _extract_post_created_at(block: str) -> datetime | None:
+    match = re.search(r'<time[^>]+data-time="(\d+)"', block, flags=re.IGNORECASE)
+    if not match:
+        return None
+    return datetime.fromtimestamp(int(match.group(1)), tz=timezone.utc)
+
+
+def _extract_post_url(block: str) -> str | None:
+    match = re.search(
+        r'<a href="([^"]+#post-\d+|/forum/threads/[^"]+#post-\d+)"[^>]+class="item item-post-link',
+        block,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return _to_absolute_url(match.group(1))
+
+
+def _extract_post_number(block: str) -> int | None:
+    match = re.search(
+        r'class="item item-post-link[^"]*"[^>]*>\s*<span>#(\d+)</span>',
+        block,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _extract_post_content_html(block: str) -> str:
+    match = re.search(
+        r'<blockquote id="message-content-\d+" class="messageText[^"]*"[^>]*>(.*?)</blockquote>',
+        block,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if match:
+        return match.group(1).strip()
+    return _extract_first_post_html(block)
+
+
+def _extract_post_reactions(block: str) -> list[PostReactionRecord]:
+    match = re.search(r":data-rated='([^']*)'", block, flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return []
+
+    raw_json = html.unescape(match.group(1))
+    try:
+        payload = json.loads(raw_json)
+    except Exception:
+        return []
+
+    aggregated: dict[int, PostReactionRecord] = {}
+    for item in payload:
+        try:
+            smile_id = int(item.get("smile_id"))
+        except (TypeError, ValueError):
+            continue
+
+        title = str(item.get("smile.title") or item.get("title") or "").strip()
+        try:
+            count = int(item.get("smiles.count") or item.get("count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+
+        existing = aggregated.get(smile_id)
+        if existing is None or count > existing.count:
+            aggregated[smile_id] = PostReactionRecord(smile_id=smile_id, title=title, count=count)
+
+    return sorted(aggregated.values(), key=lambda item: (-item.count, item.title.lower(), item.smile_id))
+
+
 def _normalize_space(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _extract_topic_id_from_url(topic_url: str) -> int | None:
+    match = re.search(r"/threads/[^/]+\.(\d+)(?:/page-\d+)?/?(?:\?.*)?$", topic_url)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _extract_current_page(topic_url: str) -> int:
+    match = re.search(r"/page-(\d+)", topic_url)
+    if not match:
+        return 1
+    return int(match.group(1))
+
+
+def _extract_total_pages(html_text: str) -> int:
+    pages = [1]
+    data_pages_match = re.search(r'<ul class="pagination"[^>]*data-pages="(\d+)"', html_text)
+    if data_pages_match:
+        pages.append(int(data_pages_match.group(1)))
+    pages.extend(int(match.group(1)) for match in re.finditer(r"/page-(\d+)", html_text))
+    return max(pages)
+
+
+def _normalize_topic_url(topic_url: str) -> str:
+    return re.sub(r"/page-\d+/?(?:\?.*)?$", "/", topic_url).rstrip("/") + "/"
 
 
 def _to_absolute_url(path: str) -> str:

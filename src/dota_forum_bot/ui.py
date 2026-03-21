@@ -6,7 +6,7 @@ import subprocess
 import sys
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -28,8 +28,10 @@ DISPLAY_COMMANDS: list[tuple[str, list[str]]] = [
     ("Build Yakim Profile", ["build-yakim-profile", "--limit", "500"]),
     ("LLM Draft New Topics", ["llm-draft-new-topics", "--limit", "1"]),
     ("Publish LLM Drafted Topics", ["publish-llm-drafted-topics", "--limit", "1"]),
+    ("Publish Daily Summary", ["publish-daily-summary"]),
 ]
 WORKER_COMMAND = ["run-auto-reply-worker"]
+DAILY_SUMMARY_WORKER_COMMAND = ["run-daily-summary-worker"]
 
 
 def _utc_now_iso() -> str:
@@ -63,6 +65,11 @@ class UIProcessManager:
             name="worker",
             command=WORKER_COMMAND,
             log_path=LOGS_DIR / "worker.log",
+        )
+        self._daily_summary_worker = ManagedProcess(
+            name="daily_summary_worker",
+            command=DAILY_SUMMARY_WORKER_COMMAND,
+            log_path=LOGS_DIR / "publish-daily-summary.log",
         )
 
     def _spawn(self, command: list[str], log_path: Path) -> subprocess.Popen:
@@ -120,6 +127,39 @@ class UIProcessManager:
                 "exit_code": self._worker.exit_code(),
             }
 
+    def start_daily_summary_worker(self) -> dict[str, Any]:
+        with self._lock:
+            if self._daily_summary_worker.is_running:
+                return {"status": "already_running", "pid": self._daily_summary_worker.pid}
+            self._daily_summary_worker.process = self._spawn(
+                self._daily_summary_worker.command,
+                self._daily_summary_worker.log_path,
+            )
+            self._daily_summary_worker.started_at = _utc_now_iso()
+            return {"status": "started", "pid": self._daily_summary_worker.pid}
+
+    def stop_daily_summary_worker(self) -> dict[str, Any]:
+        with self._lock:
+            if not self._daily_summary_worker.is_running or self._daily_summary_worker.process is None:
+                return {"status": "not_running"}
+            self._daily_summary_worker.process.terminate()
+            try:
+                self._daily_summary_worker.process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._daily_summary_worker.process.kill()
+                self._daily_summary_worker.process.wait(timeout=5)
+            return {"status": "stopped", "exit_code": self._daily_summary_worker.exit_code()}
+
+    def daily_summary_worker_status(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "running": self._daily_summary_worker.is_running,
+                "pid": self._daily_summary_worker.pid,
+                "started_at": self._daily_summary_worker.started_at,
+                "log": self._daily_summary_worker.log_path.name,
+                "exit_code": self._daily_summary_worker.exit_code(),
+            }
+
 
 def _tail(path: Path, max_lines: int = 200) -> str:
     if not path.exists():
@@ -136,6 +176,8 @@ def _json_ready(value: Any) -> Any:
         return [_json_ready(item) for item in value]
     if isinstance(value, datetime):
         return value.isoformat(sep=" ", timespec="seconds")
+    if isinstance(value, date):
+        return value.isoformat()
     return value
 
 
@@ -412,6 +454,23 @@ HTML_PAGE = """<!doctype html>
 
       <section class="card">
         <div class="card-head">
+          <h2>Daily Summary</h2>
+        </div>
+        <div class="card-body stack">
+          <div id="daily-summary-pill" class="status-pill off">Daily summary worker stopped</div>
+          <label><input id="daily-summary-enabled" type="checkbox"> Автопубликация включена</label>
+          <div class="toolbar">
+            <input id="daily-summary-time" type="time" value="12:00">
+            <button class="secondary" onclick="saveDailySummarySchedule()">Save Schedule</button>
+            <button onclick="runDailySummaryNow()">Run Now</button>
+          </div>
+          <div class="hint" id="daily-summary-meta">Worker PID: -, Started: -</div>
+          <div class="hint" id="daily-summary-last">Последний запуск: -</div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
           <h2>Commands</h2>
         </div>
         <div class="card-body actions" id="commands"></div>
@@ -460,7 +519,7 @@ HTML_PAGE = """<!doctype html>
 
   <script>
     const COMMANDS = __COMMANDS__;
-    const logs = ["worker.log", ...COMMANDS.map(x => x.log)];
+    const logs = ["worker.log", "publish-daily-summary.log", ...COMMANDS.map(x => x.log)];
 
     function renderCommands() {
       const box = document.getElementById("commands");
@@ -511,6 +570,19 @@ HTML_PAGE = """<!doctype html>
       pill.textContent = data.worker.running ? "Worker running" : "Worker stopped";
       document.getElementById("worker-meta").textContent =
         `Worker PID: ${data.worker.pid ?? "-"}, Started: ${data.worker.started_at ?? "-"}`;
+      const summaryPill = document.getElementById("daily-summary-pill");
+      summaryPill.className = data.daily_summary.worker.running ? "status-pill" : "status-pill off";
+      summaryPill.textContent = data.daily_summary.worker.running
+        ? "Daily summary worker running"
+        : "Daily summary worker stopped";
+      document.getElementById("daily-summary-enabled").checked = !!data.daily_summary.schedule.enabled;
+      document.getElementById("daily-summary-time").value = data.daily_summary.schedule.schedule_time ?? "12:00";
+      document.getElementById("daily-summary-meta").textContent =
+        `Worker PID: ${data.daily_summary.worker.pid ?? "-"}, Started: ${data.daily_summary.worker.started_at ?? "-"}`;
+      const lastRun = data.daily_summary.latest_run;
+      document.getElementById("daily-summary-last").textContent = lastRun
+        ? `Последний запуск: ${lastRun.summary_date} | ${lastRun.status} | ${lastRun.topic_url ?? "-"}`
+        : "Последний запуск: -";
     }
 
     async function refreshLogs() {
@@ -579,6 +651,23 @@ HTML_PAGE = """<!doctype html>
       await refreshAll();
     }
 
+    async function saveDailySummarySchedule() {
+      const enabled = document.getElementById("daily-summary-enabled").checked;
+      const scheduleTime = document.getElementById("daily-summary-time").value || "12:00";
+      await fetchJson("/api/daily-summary/config", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({enabled, schedule_time: scheduleTime})
+      });
+      await refreshAll();
+    }
+
+    async function runDailySummaryNow() {
+      await fetchJson("/api/daily-summary/run", {method: "POST"});
+      document.getElementById("log-select").value = "publish-daily-summary.log";
+      await refreshAll();
+    }
+
     async function refreshAll() {
       await refreshStatus();
       await refreshLogs();
@@ -601,6 +690,9 @@ class BotUI:
         self.settings = settings
         self.db = Database(settings.db_settings())
         self.manager = UIProcessManager()
+        schedule = self.db.get_daily_summary_schedule()
+        if schedule.get("enabled"):
+            self.manager.start_daily_summary_worker()
 
     def command_specs(self) -> list[dict[str, Any]]:
         specs = []
@@ -618,6 +710,11 @@ class BotUI:
         return {
             "worker": self.manager.worker_status(),
             "dashboard": self.db.get_dashboard_status(),
+            "daily_summary": {
+                "worker": self.manager.daily_summary_worker_status(),
+                "schedule": self.db.get_daily_summary_schedule(),
+                "latest_run": (self.db.get_recent_daily_summary_runs(limit=1) or [None])[0],
+            },
         }
 
     def monitoring(self) -> dict[str, Any]:
@@ -626,6 +723,7 @@ class BotUI:
             "ready_topics": self.db.get_ready_topics(limit=50),
             "recent_replies": self.db.get_recent_bot_replies(limit=50),
             "recent_failures": self.db.get_recent_failures(limit=50),
+            "recent_daily_summaries": self.db.get_recent_daily_summary_runs(limit=20),
         }
 
     def run_command(self, command: list[str]) -> dict[str, Any]:
@@ -636,6 +734,26 @@ class BotUI:
 
     def stop_worker(self) -> dict[str, Any]:
         return self.manager.stop_worker()
+
+    def update_daily_summary_schedule(self, enabled: bool, schedule_time: str) -> dict[str, Any]:
+        self.db.set_daily_summary_schedule(enabled=enabled, schedule_time=schedule_time)
+        if enabled:
+            worker = self.manager.start_daily_summary_worker()
+        else:
+            worker = self.manager.stop_daily_summary_worker()
+        return {
+            "schedule": self.db.get_daily_summary_schedule(),
+            "worker": self.manager.daily_summary_worker_status(),
+            "action": worker,
+        }
+
+    def run_daily_summary_now(self) -> dict[str, Any]:
+        if self.manager.daily_summary_worker_status().get("running"):
+            return {
+                "status": "worker_running",
+                "message": "Daily summary worker is already running. Stop it before starting a manual run.",
+            }
+        return self.manager.run_one_off(["publish-daily-summary"])
 
     def read_log(self, name: str) -> dict[str, Any]:
         safe_name = Path(name).name
@@ -671,6 +789,14 @@ class UIRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/worker/stop":
             self._send_json(self.ui.stop_worker())
+            return
+        if parsed.path == "/api/daily-summary/config":
+            enabled = bool(body.get("enabled"))
+            schedule_time = str(body.get("schedule_time") or "12:00")
+            self._send_json(self.ui.update_daily_summary_schedule(enabled=enabled, schedule_time=schedule_time))
+            return
+        if parsed.path == "/api/daily-summary/run":
+            self._send_json(self.ui.run_daily_summary_now())
             return
         if parsed.path == "/api/command":
             command = body.get("command")
