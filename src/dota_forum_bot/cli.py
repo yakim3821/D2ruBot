@@ -5,7 +5,10 @@ import sys
 
 from .client import Dota2ForumClient
 from .config import Settings
+from .db import Database
 from .exceptions import ForumBotError
+from .llm_client import LLMClient
+from .services import ForumSyncService
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -14,6 +17,57 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("login-check", help="Log in and verify that the session is authenticated.")
     subparsers.add_parser("send-test", help="Log in and send a test message to the configured thread URL.")
+    subparsers.add_parser("scan-taverna", help="Scan Taverna section and save discovered topics to PostgreSQL.")
+
+    sync_topic_parser = subparsers.add_parser("sync-topic", help="Read one topic page and save its starter post.")
+    sync_topic_parser.add_argument("url", help="Absolute forum topic URL.")
+
+    list_topics_parser = subparsers.add_parser("list-new-topics", help="List topics where the bot has not replied yet.")
+    list_topics_parser.add_argument("--limit", type=int, default=20, help="Maximum number of topics to print.")
+
+    draft_topics_parser = subparsers.add_parser(
+        "draft-new-topics",
+        help="Sync new topics and send draft replies into the safe test conversation.",
+    )
+    draft_topics_parser.add_argument("--limit", type=int, default=5, help="Maximum number of draft topics to process.")
+
+    publish_topics_parser = subparsers.add_parser(
+        "publish-drafted-topics",
+        help="Publish previously drafted replies into real forum topics.",
+    )
+    publish_topics_parser.add_argument("--limit", type=int, default=1, help="Maximum number of drafted topics to publish.")
+
+    profile_posts_parser = subparsers.add_parser(
+        "sync-yakim-posts",
+        help="Sync Yakim38 profile posts into PostgreSQL for future style profiling.",
+    )
+    profile_posts_parser.add_argument("--pages", type=int, default=3, help="How many activity pages to scan.")
+
+    profile_build_parser = subparsers.add_parser(
+        "build-yakim-profile",
+        help="Build and store a basic style profile for Yakim38 from synced profile posts.",
+    )
+    profile_build_parser.add_argument("--limit", type=int, default=200, help="How many synced profile posts to use.")
+
+    llm_draft_parser = subparsers.add_parser(
+        "llm-draft-new-topics",
+        help="Generate LLM replies for new topics and send them only to the safe test conversation.",
+    )
+    llm_draft_parser.add_argument("--limit", type=int, default=2, help="Maximum number of topics to process.")
+
+    llm_publish_parser = subparsers.add_parser(
+        "publish-llm-drafted-topics",
+        help="Publish LLM-generated drafts from the test conversation pipeline into real forum topics.",
+    )
+    llm_publish_parser.add_argument("--limit", type=int, default=1, help="Maximum number of topics to publish.")
+
+    worker_parser = subparsers.add_parser(
+        "run-auto-reply-worker",
+        help="Run a background worker that scans Taverna and auto-replies once per fresh topic.",
+    )
+    worker_parser.add_argument("--interval", type=int, default=30, help="Seconds between cycles and retry delay after errors.")
+    worker_parser.add_argument("--max-age-days", type=int, default=3, help="Reply only to topics not older than this many days.")
+    worker_parser.add_argument("--batch-limit", type=int, default=5, help="Maximum number of fresh topics to process per cycle.")
     return parser
 
 
@@ -22,6 +76,8 @@ def main() -> int:
     args = parser.parse_args()
     settings = Settings.from_env()
     client = Dota2ForumClient(base_url=settings.base_url, session_file=settings.session_file)
+    db = Database(settings.db_settings())
+    service = ForumSyncService(client=client, db=db)
 
     try:
         auth_mode = client.ensure_authenticated(
@@ -42,11 +98,101 @@ def main() -> int:
 
             result = client.send_message_to_thread(settings.test_thread_url, settings.test_message)
             print(f"Send-test completed: {result}")
+        elif args.command == "scan-taverna":
+            result = service.scan_taverna()
+            print(
+                f"Scanned Taverna: found={result.found}, "
+                f"saved={result.inserted_or_updated}, new={result.new_topics}"
+            )
+        elif args.command == "sync-topic":
+            topic_page = service.sync_topic(args.url)
+            print(
+                f"Synced topic {topic_page.topic.forum_topic_id}: "
+                f"title={topic_page.topic.title!r}, starter_post={topic_page.first_post.forum_post_id}"
+            )
+        elif args.command == "list-new-topics":
+            topics = service.list_new_topics(limit=args.limit)
+            if not topics:
+                print("No unreplied topics found.")
+            else:
+                for topic in topics:
+                    print(f"{topic['forum_topic_id']}: {topic['title']} -> {topic['topic_url']}")
+        elif args.command == "draft-new-topics":
+            if not settings.test_conversation_url:
+                raise ForumBotError("DOTA2_FORUM_TEST_CONVERSATION_URL must be set for draft-new-topics.")
+            result = service.draft_new_topics_to_conversation(
+                conversation_url=settings.test_conversation_url,
+                limit=args.limit,
+            )
+            print(
+                f"Draft processing finished: processed={result.processed}, "
+                f"sent={result.sent}, failed={result.failed}"
+            )
+        elif args.command == "publish-drafted-topics":
+            result = service.publish_drafted_topics(limit=args.limit)
+            print(
+                f"Publish finished: processed={result.processed}, "
+                f"published={result.published}, failed={result.failed}"
+            )
+        elif args.command == "sync-yakim-posts":
+            result = service.sync_user_profile_posts(max_pages=args.pages)
+            print(
+                f"Yakim38 posts synced: pages_scanned={result.pages_scanned}, "
+                f"posts_saved={result.posts_saved}, total_pages={result.total_pages}"
+            )
+        elif args.command == "build-yakim-profile":
+            result = service.build_yakim_style_profile(limit=args.limit)
+            print(
+                f"Yakim38 style profile built: forum_user_id={result.forum_user_id}, "
+                f"posts_used={result.posts_used}, confidence={result.confidence_score}"
+            )
+        elif args.command == "llm-draft-new-topics":
+            if not settings.test_conversation_url:
+                raise ForumBotError("DOTA2_FORUM_TEST_CONVERSATION_URL must be set for llm-draft-new-topics.")
+            llm = LLMClient(
+                api_key=settings.deepseek_api_key,
+                model=settings.deepseek_model,
+                base_url=settings.deepseek_base_url,
+            )
+            result = service.draft_new_topics_with_llm(
+                llm=llm,
+                conversation_url=settings.test_conversation_url,
+                limit=args.limit,
+            )
+            print(
+                f"LLM draft processing finished: processed={result.processed}, "
+                f"sent={result.sent}, failed={result.failed}"
+            )
+        elif args.command == "publish-llm-drafted-topics":
+            result = service.publish_llm_drafted_topics(limit=args.limit)
+            print(
+                f"LLM publish finished: processed={result.processed}, "
+                f"published={result.published}, failed={result.failed}"
+            )
+        elif args.command == "run-auto-reply-worker":
+            llm = LLMClient(
+                api_key=settings.deepseek_api_key,
+                model=settings.deepseek_model,
+                base_url=settings.deepseek_base_url,
+            )
+            print(
+                f"Auto-reply worker started: interval={args.interval}s, "
+                f"max_age_days={args.max_age_days}, batch_limit={args.batch_limit}"
+            )
+            service.run_auto_reply_worker(
+                llm=llm,
+                poll_interval_seconds=args.interval,
+                max_age_days=args.max_age_days,
+                batch_limit=args.batch_limit,
+            )
 
         return 0
     except ForumBotError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print("Stopped by user.")
+        return 0
 
 
 if __name__ == "__main__":

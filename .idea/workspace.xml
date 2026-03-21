@@ -4,14 +4,16 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="63386f1a-d5f6-4c51-aa31-f06c006e8555" name="Changes" comment="Start">
+    <list default="true" id="63386f1a-d5f6-4c51-aa31-f06c006e8555" name="Changes" comment="роадмап">
       <change beforePath="$PROJECT_DIR$/.env.example" beforeDir="false" afterPath="$PROJECT_DIR$/.env.example" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pyproject.toml" beforeDir="false" afterPath="$PROJECT_DIR$/pyproject.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/cli.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/cli.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/client.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/client.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/config.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/config.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/exceptions.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/exceptions.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -46,7 +48,6 @@
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
     "RunOnceActivity.git.unshallow": "true",
     "RunOnceActivity.typescript.service.memoryLimit.init": "true",
-    "SHARE_PROJECT_CONFIGURATION_FILES": "true",
     "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1": "true",
     "git-widget-placeholder": "master",
     "javascript.preferred.runtime.type.id": "node",
@@ -58,6 +59,11 @@
     "nodejs_package_manager_path": "npm",
     "to.speed.mode.migration.done": "true",
     "vue.rearranger.settings.migration": "true"
+  },
+  "keyToStringList": {
+    "DatabaseDriversLRU": [
+      "postgresql"
+    ]
   }
 }]]></component>
   <component name="SharedIndexes">
@@ -76,7 +82,7 @@
       <updated>1768072373018</updated>
       <workItem from="1768072375584" duration="2918000" />
       <workItem from="1768075867204" duration="7000" />
-      <workItem from="1774043544193" duration="3973000" />
+      <workItem from="1774043544193" duration="14368000" />
     </task>
     <task id="LOCAL-00001" summary="Start">
       <option name="closed" value="true" />
@@ -86,7 +92,23 @@
       <option name="project" value="LOCAL" />
       <updated>1774046138646</updated>
     </task>
-    <option name="localTasksCounter" value="2" />
+    <task id="LOCAL-00002" summary="Авторизация и тестовая отправка сообщений">
+      <option name="closed" value="true" />
+      <created>1774047609111</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1774047609111</updated>
+    </task>
+    <task id="LOCAL-00003" summary="роадмап">
+      <option name="closed" value="true" />
+      <created>1774048854716</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1774048854716</updated>
+    </task>
+    <option name="localTasksCounter" value="4" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -105,6 +127,8 @@
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="Start" />
-    <option name="LAST_COMMIT_MESSAGE" value="Start" />
+    <MESSAGE value="Авторизация и тестовая отправка сообщений" />
+    <MESSAGE value="роадмап" />
+    <option name="LAST_COMMIT_MESSAGE" value="роадмап" />
   </component>
 </project>

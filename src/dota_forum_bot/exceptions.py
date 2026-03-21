@@ -8,3 +8,7 @@ class AuthError(ForumBotError):
 
 class MessageSendError(ForumBotError):
     """Raised when test message sending fails."""
+
+
+class DatabaseError(ForumBotError):
+    """Raised when a database operation fails."""

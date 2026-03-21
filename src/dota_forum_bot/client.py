@@ -150,6 +150,9 @@ class Dota2ForumClient:
 
         return False
 
+    def fetch_page(self, url: str) -> HttpResponse:
+        return self._request(url)
+
     def save_session(self) -> None:
         cookies = []
         for cookie in self.cookie_jar:
@@ -330,8 +333,6 @@ class Dota2ForumClient:
 
         for form in parser.forms:
             action = form.action.strip()
-            if action.lower().startswith("javascript:"):
-                continue
 
             has_textarea = form.textarea_name is not None
             has_editor = form.has_editor
@@ -339,7 +340,7 @@ class Dota2ForumClient:
             if not (has_textarea or has_editor or has_submit):
                 continue
 
-            endpoint = urljoin(page_url, action) if action else page_url
+            endpoint = page_url if action.lower().startswith("javascript:") else (urljoin(page_url, action) if action else page_url)
             return form, endpoint
 
         return None, None
