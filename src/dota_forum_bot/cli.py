@@ -84,6 +84,27 @@ def build_parser() -> argparse.ArgumentParser:
     daily_summary_worker_parser.add_argument("--interval", type=int, default=30, help="Seconds between schedule checks.")
     daily_summary_worker_parser.add_argument("--lookback-hours", type=int, default=24, help="How many past hours to include.")
 
+    daily_summary_schedule_parser = subparsers.add_parser(
+        "set-daily-summary-schedule",
+        help="Enable/disable daily summary schedule and set its publish time without using the UI.",
+    )
+    daily_summary_schedule_parser.add_argument(
+        "--time",
+        dest="schedule_time",
+        help="Publish time in HH:MM format, for example 19:35.",
+    )
+    daily_summary_schedule_group = daily_summary_schedule_parser.add_mutually_exclusive_group()
+    daily_summary_schedule_group.add_argument(
+        "--enabled",
+        action="store_true",
+        help="Enable the daily summary schedule.",
+    )
+    daily_summary_schedule_group.add_argument(
+        "--disabled",
+        action="store_true",
+        help="Disable the daily summary schedule.",
+    )
+
     ui_parser = subparsers.add_parser(
         "run-ui",
         help="Run optional local web UI for command запуск, logs, and worker status.",
@@ -250,6 +271,21 @@ def main() -> int:
                 llm=llm,
                 poll_interval_seconds=args.interval,
                 lookback_hours=args.lookback_hours,
+            )
+        elif args.command == "set-daily-summary-schedule":
+            current = db.get_daily_summary_schedule()
+            schedule_time = args.schedule_time or current.get("schedule_time") or "12:00"
+            if args.enabled:
+                enabled = True
+            elif args.disabled:
+                enabled = False
+            else:
+                enabled = bool(current.get("enabled"))
+            db.set_daily_summary_schedule(enabled=enabled, schedule_time=schedule_time)
+            updated = db.get_daily_summary_schedule()
+            print(
+                f"Daily summary schedule updated: enabled={updated['enabled']}, "
+                f"time={updated['schedule_time']}"
             )
 
         return 0

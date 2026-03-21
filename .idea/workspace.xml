@@ -4,15 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="63386f1a-d5f6-4c51-aa31-f06c006e8555" name="Changes" comment="ui">
+    <list default="true" id="63386f1a-d5f6-4c51-aa31-f06c006e8555" name="Changes" comment="авто постинг">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/cli.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/cli.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/client.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/client.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/db.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/db.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/llm_client.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/llm_client.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/parsers.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/parsers.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/services.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/services.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/ui.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/ui.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -82,7 +76,7 @@
       <updated>1768072373018</updated>
       <workItem from="1768072375584" duration="2918000" />
       <workItem from="1768075867204" duration="7000" />
-      <workItem from="1774043544193" duration="38222000" />
+      <workItem from="1774043544193" duration="38882000" />
     </task>
     <task id="LOCAL-00001" summary="Start">
       <option name="closed" value="true" />
@@ -140,7 +134,15 @@
       <option name="project" value="LOCAL" />
       <updated>1774106052499</updated>
     </task>
-    <option name="localTasksCounter" value="8" />
+    <task id="LOCAL-00008" summary="авто постинг">
+      <option name="closed" value="true" />
+      <created>1774112719581</created>
+      <option name="number" value="00008" />
+      <option name="presentableId" value="LOCAL-00008" />
+      <option name="project" value="LOCAL" />
+      <updated>1774112719581</updated>
+    </task>
+    <option name="localTasksCounter" value="9" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -165,6 +167,7 @@
     <MESSAGE value="задержка" />
     <MESSAGE value="фикс" />
     <MESSAGE value="ui" />
-    <option name="LAST_COMMIT_MESSAGE" value="ui" />
+    <MESSAGE value="авто постинг" />
+    <option name="LAST_COMMIT_MESSAGE" value="авто постинг" />
   </component>
 </project>
