@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+import random
 
 from .client import Dota2ForumClient
 from .db import Database
@@ -96,6 +97,16 @@ class ForumSyncService:
             log(message)
 
     @staticmethod
+    def _human_reply_delay_minutes(reply_count: int | None) -> int:
+        if reply_count is None:
+            return random.randint(20, 60)
+        if reply_count <= 2:
+            return random.randint(30, 90)
+        if reply_count <= 5:
+            return random.randint(10, 30)
+        return random.randint(3, 10)
+
+    @staticmethod
     def _format_dt(value) -> str:
         if value is None:
             return "None"
@@ -124,6 +135,17 @@ class ForumSyncService:
             if created_at < cutoff:
                 reasons.append("older_than_max_age")
 
+        reply_not_before = topic.get("reply_not_before")
+        if reply_not_before is None:
+            reasons.append("reply_not_scheduled")
+        else:
+            if getattr(reply_not_before, "tzinfo", None) is None:
+                now = datetime.now()
+            else:
+                now = datetime.now(reply_not_before.tzinfo)
+            if reply_not_before > now:
+                reasons.append("not_due_yet")
+
         return (len(reasons) == 0, reasons)
 
     def scan_taverna(self) -> ScanResult:
@@ -137,6 +159,15 @@ class ForumSyncService:
         for topic in topics:
             exists = self.db.topic_exists(topic.forum_topic_id)
             self.db.upsert_topic(topic)
+            if not exists or self.db.topic_needs_reply_schedule(topic.forum_topic_id):
+                delay_minutes = self._human_reply_delay_minutes(topic.forum_reply_count)
+                reply_not_before = datetime.now() + timedelta(minutes=delay_minutes)
+                self.db.set_topic_reply_schedule(topic.forum_topic_id, reply_not_before)
+                self._emit(
+                    log if 'log' in locals() else None,
+                    f"Scheduled topic {topic.forum_topic_id} reply after {delay_minutes} minutes "
+                    f"(reply_count={topic.forum_reply_count}, not_before={self._format_dt(reply_not_before)})",
+                )
             changed += 1
             if not exists:
                 new_topics += 1
@@ -478,8 +509,10 @@ class ForumSyncService:
                     "  "
                     f"{topic['forum_topic_id']} | eligible={eligible} | "
                     f"reasons={','.join(reasons) if reasons else 'ok'} | "
+                    f"reply_count={topic.get('forum_reply_count')} | "
                     f"pinned={topic['is_pinned']} | closed={topic['is_closed']} | "
                     f"replied={topic['bot_replied_once']} | "
+                    f"reply_not_before={self._format_dt(topic.get('reply_not_before'))} | "
                     f"created={self._format_dt(topic.get('created_at_forum'))} | "
                     f"first_seen={self._format_dt(topic.get('first_seen_at'))} | "
                     f"title={topic['title']}"

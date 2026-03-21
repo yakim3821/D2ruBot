@@ -28,6 +28,7 @@ class TopicRecord:
     author: ForumUserRecord | None
     created_at_forum: datetime | None = None
     last_post_at_forum: datetime | None = None
+    forum_reply_count: int | None = None
     is_closed: bool = False
     is_pinned: bool = False
 
@@ -100,6 +101,7 @@ def parse_taverna_topics(section_html: str) -> list[TopicRecord]:
         context = section_html[context_start:context_end]
 
         author = _extract_user_from_context(context)
+        reply_count = _extract_topic_reply_count(context)
         is_closed = "closed" in context.lower() or "закрыта" in context.lower()
         is_pinned = "sticky" in context.lower() or "pinned" in context.lower() or "закреп" in context.lower()
 
@@ -110,6 +112,7 @@ def parse_taverna_topics(section_html: str) -> list[TopicRecord]:
                 title=title,
                 topic_url=match.group(0),
                 author=author,
+                forum_reply_count=reply_count,
                 is_closed=is_closed,
                 is_pinned=is_pinned,
             )
@@ -162,6 +165,7 @@ def _parse_taverna_topic_blocks(list_html: str) -> list[TopicRecord]:
                 topic_url=topic_url,
                 author=author,
                 created_at_forum=created_at,
+                forum_reply_count=_extract_topic_reply_count(block),
                 is_closed="closed" in classes,
                 is_pinned="sticky" in classes,
             )
@@ -342,6 +346,17 @@ def _extract_topic_created_at(block: str) -> datetime | None:
     if not match:
         return None
     return datetime.fromtimestamp(int(match.group(1)))
+
+
+def _extract_topic_reply_count(block: str) -> int | None:
+    for pattern in (r"Сообщений:\s*<span>([\d\.\s]+)</span>", r"Сообщений:\s*([\d\.\s]+)"):
+        match = re.search(pattern, block, flags=re.IGNORECASE)
+        if not match:
+            continue
+        digits = re.sub(r"\D", "", match.group(1))
+        if digits:
+            return int(digits)
+    return None
 
 
 def _extract_first_post_id(html_text: str) -> int | None:

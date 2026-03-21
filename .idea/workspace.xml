@@ -4,16 +4,12 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="63386f1a-d5f6-4c51-aa31-f06c006e8555" name="Changes" comment="роадмап">
-      <change beforePath="$PROJECT_DIR$/.env.example" beforeDir="false" afterPath="$PROJECT_DIR$/.env.example" afterDir="false" />
+    <list default="true" id="63386f1a-d5f6-4c51-aa31-f06c006e8555" name="Changes" comment="final">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pyproject.toml" beforeDir="false" afterPath="$PROJECT_DIR$/pyproject.toml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/cli.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/cli.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/client.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/client.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/config.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/config.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/exceptions.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/exceptions.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docker/postgres/init/001_schema.sql" beforeDir="false" afterPath="$PROJECT_DIR$/docker/postgres/init/001_schema.sql" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/db.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/db.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/parsers.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/parsers.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/services.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/services.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -49,7 +45,7 @@
     "RunOnceActivity.git.unshallow": "true",
     "RunOnceActivity.typescript.service.memoryLimit.init": "true",
     "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1": "true",
-    "git-widget-placeholder": "master",
+    "git-widget-placeholder": "main",
     "javascript.preferred.runtime.type.id": "node",
     "junie.onboarding.icon.badge.shown": "true",
     "node.js.detected.package.eslint": "true",
@@ -57,6 +53,7 @@
     "node.js.selected.package.eslint": "(autodetect)",
     "node.js.selected.package.tslint": "(autodetect)",
     "nodejs_package_manager_path": "npm",
+    "settings.editor.selected.configurable": "org.jetbrains.plugins.github.ui.GithubSettingsConfigurable",
     "to.speed.mode.migration.done": "true",
     "vue.rearranger.settings.migration": "true"
   },
@@ -82,7 +79,7 @@
       <updated>1768072373018</updated>
       <workItem from="1768072375584" duration="2918000" />
       <workItem from="1768075867204" duration="7000" />
-      <workItem from="1774043544193" duration="14368000" />
+      <workItem from="1774043544193" duration="20384000" />
     </task>
     <task id="LOCAL-00001" summary="Start">
       <option name="closed" value="true" />
@@ -108,7 +105,15 @@
       <option name="project" value="LOCAL" />
       <updated>1774048854716</updated>
     </task>
-    <option name="localTasksCounter" value="4" />
+    <task id="LOCAL-00004" summary="final">
+      <option name="closed" value="true" />
+      <created>1774059159238</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1774059159238</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -129,6 +134,7 @@
     <MESSAGE value="Start" />
     <MESSAGE value="Авторизация и тестовая отправка сообщений" />
     <MESSAGE value="роадмап" />
-    <option name="LAST_COMMIT_MESSAGE" value="роадмап" />
+    <MESSAGE value="final" />
+    <option name="LAST_COMMIT_MESSAGE" value="final" />
   </component>
 </project>

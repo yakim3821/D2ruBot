@@ -17,12 +17,15 @@ CREATE TABLE IF NOT EXISTS topics (
     author_user_id BIGINT REFERENCES users(forum_user_id),
     created_at_forum TIMESTAMPTZ,
     last_post_at_forum TIMESTAMPTZ,
+    forum_reply_count INTEGER,
     is_closed BOOLEAN NOT NULL DEFAULT FALSE,
     is_pinned BOOLEAN NOT NULL DEFAULT FALSE,
     first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_scanned_at TIMESTAMPTZ,
     bot_replied_once BOOLEAN NOT NULL DEFAULT FALSE,
     bot_replied_at TIMESTAMPTZ,
+    reply_not_before TIMESTAMPTZ,
+    reply_skip_reason TEXT,
     reply_target TEXT NOT NULL DEFAULT 'topic'
 );
 
