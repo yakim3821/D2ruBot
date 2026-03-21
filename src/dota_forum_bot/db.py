@@ -7,6 +7,9 @@ from .exceptions import DatabaseError
 from .parsers import ForumUserRecord, PostRecord, TopicRecord, UserProfilePostRecord
 
 
+DB_TIMEZONE = "Europe/Moscow"
+
+
 @dataclass(frozen=True)
 class DatabaseSettings:
     host: str
@@ -36,6 +39,7 @@ class Database:
                 dbname=self.settings.name,
                 user=self.settings.user,
                 password=self.settings.password,
+                options=f"-c timezone={DB_TIMEZONE}",
             )
         except Exception as exc:
             raise DatabaseError(f"Failed to connect to PostgreSQL: {exc}") from exc

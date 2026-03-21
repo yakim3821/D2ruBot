@@ -3,7 +3,7 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Iterable
 
 
@@ -238,7 +238,7 @@ def parse_profile_posts_page(profile_user_id: int, profile_username: str, page_u
         )
         forum_section_url = _to_absolute_url(section_match.group(1)) if section_match else None
         content_text = _normalize_space(html.unescape(re.sub(r"<[^>]+>", " ", content_match.group(1)))) if content_match else ""
-        created_at_forum = datetime.fromtimestamp(int(time_match.group(1))) if time_match else None
+        created_at_forum = datetime.fromtimestamp(int(time_match.group(1)), tz=timezone.utc) if time_match else None
 
         records.append(
             UserProfilePostRecord(
@@ -345,7 +345,7 @@ def _extract_topic_created_at(block: str) -> datetime | None:
     )
     if not match:
         return None
-    return datetime.fromtimestamp(int(match.group(1)))
+    return datetime.fromtimestamp(int(match.group(1)), tz=timezone.utc)
 
 
 def _extract_topic_reply_count(block: str) -> int | None:

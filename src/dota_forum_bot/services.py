@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import random
+from zoneinfo import ZoneInfo
 
 from .client import Dota2ForumClient
 from .db import Database
@@ -26,6 +27,7 @@ TAVERNA_SCOPE = "forum_section:taverna"
 YAKIM38_PROFILE_POSTS_URL = "https://dota2.ru/forum/members/yakim38.815329/activity/posts/"
 YAKIM38_USER_ID = 815329
 YAKIM38_USERNAME = "Yakim38"
+DISPLAY_TIMEZONE = ZoneInfo("Europe/Moscow")
 
 
 @dataclass
@@ -111,7 +113,7 @@ class ForumSyncService:
         if value is None:
             return "None"
         if hasattr(value, "strftime"):
-            return value.strftime("%Y-%m-%d %H:%M:%S")
+            return value.astimezone(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S %Z")
         return str(value)
 
     def _explain_auto_reply_eligibility(self, topic: dict, max_age_days: int) -> tuple[bool, list[str]]:
@@ -127,10 +129,7 @@ class ForumSyncService:
         if created_at is None:
             reasons.append("missing_created_at")
         else:
-            if getattr(created_at, "tzinfo", None) is None:
-                now = datetime.now()
-            else:
-                now = datetime.now(created_at.tzinfo)
+            now = datetime.now(timezone.utc)
             cutoff = now - timedelta(days=max_age_days)
             if created_at < cutoff:
                 reasons.append("older_than_max_age")
@@ -139,10 +138,7 @@ class ForumSyncService:
         if reply_not_before is None:
             reasons.append("reply_not_scheduled")
         else:
-            if getattr(reply_not_before, "tzinfo", None) is None:
-                now = datetime.now()
-            else:
-                now = datetime.now(reply_not_before.tzinfo)
+            now = datetime.now(timezone.utc)
             if reply_not_before > now:
                 reasons.append("not_due_yet")
 
@@ -161,7 +157,7 @@ class ForumSyncService:
             self.db.upsert_topic(topic)
             if not exists or self.db.topic_needs_reply_schedule(topic.forum_topic_id):
                 delay_minutes = self._human_reply_delay_minutes(topic.forum_reply_count)
-                reply_not_before = datetime.now() + timedelta(minutes=delay_minutes)
+                reply_not_before = datetime.now(timezone.utc) + timedelta(minutes=delay_minutes)
                 self.db.set_topic_reply_schedule(topic.forum_topic_id, reply_not_before)
                 self._emit(
                     log if 'log' in locals() else None,
@@ -499,11 +495,16 @@ class ForumSyncService:
         details.append(summary)
         self._emit(log, summary)
 
-        if scan_result.new_topics > 0:
+        if scan_result.new_topics > 0 or not topics:
             recent_topics = self.db.get_recently_seen_topics(limit=max(scan_result.new_topics, 5))
             self._emit(log, "Recent topics after scan:")
             for topic in recent_topics[: max(scan_result.new_topics, 5)]:
                 eligible, reasons = self._explain_auto_reply_eligibility(topic, max_age_days=max_age_days)
+                wait_minutes = None
+                reply_not_before = topic.get("reply_not_before")
+                if reply_not_before is not None:
+                    wait_seconds = (reply_not_before - datetime.now(timezone.utc)).total_seconds()
+                    wait_minutes = max(0, int(wait_seconds // 60))
                 self._emit(
                     log,
                     "  "
@@ -512,6 +513,7 @@ class ForumSyncService:
                     f"reply_count={topic.get('forum_reply_count')} | "
                     f"pinned={topic['is_pinned']} | closed={topic['is_closed']} | "
                     f"replied={topic['bot_replied_once']} | "
+                    f"wait_minutes={wait_minutes if wait_minutes is not None else 'None'} | "
                     f"reply_not_before={self._format_dt(topic.get('reply_not_before'))} | "
                     f"created={self._format_dt(topic.get('created_at_forum'))} | "
                     f"first_seen={self._format_dt(topic.get('first_seen_at'))} | "
@@ -602,7 +604,7 @@ class ForumSyncService:
         cycle = 0
 
         def log(message: str) -> None:
-            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            timestamp = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S %Z")
             print(f"[{timestamp}] {message}")
 
         while True:
