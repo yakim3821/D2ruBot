@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime, timezone
 
 from .client import Dota2ForumClient
 from .config import Settings
 from .db import Database
 from .exceptions import ForumBotError
 from .llm_client import LLMClient
-from .services import ForumSyncService
+from .services import DISPLAY_TIMEZONE, ForumSyncService
 from .ui import run_ui_server
 
 
@@ -103,6 +104,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--disabled",
         action="store_true",
         help="Disable the daily summary schedule.",
+    )
+
+    subparsers.add_parser(
+        "skip-daily-summary-today",
+        help="Mark today's daily summary as already handled, so the worker skips today and waits for tomorrow.",
     )
 
     ui_parser = subparsers.add_parser(
@@ -287,6 +293,18 @@ def main() -> int:
                 f"Daily summary schedule updated: enabled={updated['enabled']}, "
                 f"time={updated['schedule_time']}"
             )
+        elif args.command == "skip-daily-summary-today":
+            today = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE)
+            summary_date = today.date()
+            schedule = db.get_daily_summary_schedule()
+            db.upsert_daily_summary_run(
+                summary_date=summary_date,
+                status="skipped",
+                scheduled_time=schedule.get("schedule_time"),
+                topic_title=f"Суммаризация - {summary_date.strftime('%d.%m.%Y')}",
+                error_message="Skipped manually by operator.",
+            )
+            print(f"Daily summary marked as skipped for {summary_date.isoformat()}.")
 
         return 0
     except ForumBotError as exc:

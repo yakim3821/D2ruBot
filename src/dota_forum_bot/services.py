@@ -998,7 +998,7 @@ class ForumSyncService:
                 existing = self.db.get_daily_summary_run(now_local.date())
 
                 if existing:
-                    if existing["status"] in {"published", "no_topics"}:
+                    if existing["status"] in {"published", "no_topics", "skipped"}:
                         log(
                             f"Daily summary cycle #{cycle}: today's run already exists "
                             f"with status={existing['status']}, sleeping {poll_interval_seconds}s."
