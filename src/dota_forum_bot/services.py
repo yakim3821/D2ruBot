@@ -4,6 +4,7 @@ import time
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, time as dt_time, timedelta, timezone
+from pathlib import Path
 import random
 from zoneinfo import ZoneInfo
 
@@ -37,6 +38,7 @@ BOT_USER_ID = 847606
 BOT_USERNAME = "Opera Mobile"
 DISPLAY_TIMEZONE = ZoneInfo("Europe/Moscow")
 BOT_AUTHORED_SKIP_REASON = "bot_authored_topic"
+AVATAR_IMAGES_DIR = Path(__file__).resolve().parents[2] / "src" / "img"
 
 
 @dataclass
@@ -128,12 +130,24 @@ class DailyTopicResult:
     details: list[str] = field(default_factory=list)
 
 
+@dataclass
+class DailyAvatarResult:
+    avatar_date: date
+    status: str
+    avatar_number: int | None = None
+    avatar_path: str | None = None
+    avatar_url: str | None = None
+    details: list[str] = field(default_factory=list)
+
+
 class ForumSyncService:
     DAILY_SUMMARY_RETRY_DELAY_SECONDS = 600
     DAILY_SUMMARY_IN_PROGRESS_TIMEOUT_SECONDS = 300
     DAILY_TOPIC_PROMPT_CODE = "daily_relationship_topic"
     DAILY_TOPIC_RETRY_DELAY_SECONDS = 600
     DAILY_TOPIC_IN_PROGRESS_TIMEOUT_SECONDS = 300
+    DAILY_AVATAR_RETRY_DELAY_SECONDS = 600
+    DAILY_AVATAR_IN_PROGRESS_TIMEOUT_SECONDS = 300
 
     def __init__(self, client: Dota2ForumClient, db: Database) -> None:
         self.client = client
@@ -1581,6 +1595,123 @@ class ForumSyncService:
                 details=details,
             )
 
+    def _avatar_image_path(self, avatar_number: int) -> Path:
+        if avatar_number < 1 or avatar_number > 31:
+            raise ValueError(f"Avatar number must be between 1 and 31, got {avatar_number}.")
+        image_path = AVATAR_IMAGES_DIR / f"{avatar_number}.png"
+        if not image_path.exists():
+            raise FileNotFoundError(f"Avatar image was not found: {image_path}")
+        return image_path
+
+    def _next_avatar_number(self) -> int:
+        state = self.db.get_avatar_rotation_state(BOT_USER_ID)
+        current_number = int(state.get("current_avatar_number") or 0) if state else 0
+        return 1 if current_number <= 0 else (current_number % 31) + 1
+
+    def update_daily_avatar(
+        self,
+        force: bool = False,
+        avatar_number: int | None = None,
+        log=None,
+    ) -> DailyAvatarResult:
+        now_local = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE)
+        avatar_date = now_local.date()
+        schedule = self.db.get_daily_avatar_schedule()
+        existing = self.db.get_daily_avatar_run(avatar_date)
+        start_message = f"Daily avatar started: date={avatar_date.isoformat()}, force={force}"
+        self._emit(log, start_message)
+
+        if existing and existing["status"] == "in_progress" and not force:
+            message = f"Daily avatar for {avatar_date.isoformat()} is already in progress."
+            self._emit(log, message)
+            return DailyAvatarResult(
+                avatar_date=avatar_date,
+                status="already_running",
+                avatar_number=existing.get("avatar_number"),
+                avatar_path=existing.get("avatar_path"),
+                avatar_url=existing.get("avatar_url"),
+                details=[message],
+            )
+
+        if existing and existing["status"] == "updated" and not force:
+            message = f"Daily avatar for {avatar_date.isoformat()} already updated: #{existing.get('avatar_number')}"
+            self._emit(log, message)
+            return DailyAvatarResult(
+                avatar_date=avatar_date,
+                status="already_updated",
+                avatar_number=existing.get("avatar_number"),
+                avatar_path=existing.get("avatar_path"),
+                avatar_url=existing.get("avatar_url"),
+                details=[message],
+            )
+
+        selected_number = avatar_number or self._next_avatar_number()
+        image_path = self._avatar_image_path(selected_number)
+        details = [f"Selected avatar #{selected_number}: {image_path}"]
+        for message in details:
+            self._emit(log, message)
+
+        self.db.upsert_daily_avatar_run(
+            avatar_date=avatar_date,
+            status="in_progress",
+            scheduled_time=schedule.get("schedule_time"),
+            forum_user_id=BOT_USER_ID,
+            avatar_number=selected_number,
+            avatar_path=str(image_path),
+        )
+
+        try:
+            result = self.client.change_avatar(str(image_path))
+            avatar_url = result.get("avatar")
+            changed_at = datetime.now(timezone.utc)
+            self.db.upsert_avatar_rotation_state(
+                forum_user_id=BOT_USER_ID,
+                current_avatar_number=selected_number,
+                current_avatar_path=str(image_path),
+                current_avatar_url=avatar_url,
+                last_changed_at=changed_at,
+            )
+            self.db.upsert_daily_avatar_run(
+                avatar_date=avatar_date,
+                status="updated",
+                scheduled_time=schedule.get("schedule_time"),
+                forum_user_id=BOT_USER_ID,
+                avatar_number=selected_number,
+                avatar_path=str(image_path),
+                avatar_url=avatar_url,
+            )
+            success = f"Daily avatar updated successfully: #{selected_number}, url={avatar_url or '-'}"
+            self._emit(log, success)
+            details.append(success)
+            return DailyAvatarResult(
+                avatar_date=avatar_date,
+                status="updated",
+                avatar_number=selected_number,
+                avatar_path=str(image_path),
+                avatar_url=avatar_url,
+                details=details,
+            )
+        except Exception as exc:
+            error_message = f"Daily avatar failed: {exc}"
+            self._emit(log, error_message)
+            self.db.upsert_daily_avatar_run(
+                avatar_date=avatar_date,
+                status="failed",
+                scheduled_time=schedule.get("schedule_time"),
+                forum_user_id=BOT_USER_ID,
+                avatar_number=selected_number,
+                avatar_path=str(image_path),
+                error_message=str(exc),
+            )
+            details.append(error_message)
+            return DailyAvatarResult(
+                avatar_date=avatar_date,
+                status="failed",
+                avatar_number=selected_number,
+                avatar_path=str(image_path),
+                details=details,
+            )
+
     def run_daily_topic_worker(
         self,
         llm: LLMClient,
@@ -1690,4 +1821,110 @@ class ForumSyncService:
                 raise
             except Exception as exc:
                 log(f"Daily topic cycle #{cycle} failed: {exc}")
+                time.sleep(poll_interval_seconds)
+
+    def run_daily_avatar_worker(
+        self,
+        poll_interval_seconds: int = 30,
+    ) -> None:
+        cycle = 0
+
+        def log(message: str) -> None:
+            timestamp = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S %Z")
+            print(f"[{timestamp}] {message}")
+
+        while True:
+            cycle += 1
+            try:
+                schedule = self.db.get_daily_avatar_schedule()
+                if not schedule.get("enabled"):
+                    log(f"Daily avatar cycle #{cycle}: disabled, sleeping {poll_interval_seconds}s.")
+                    time.sleep(poll_interval_seconds)
+                    continue
+
+                now_local = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE)
+                schedule_time = self._parse_schedule_time(schedule.get("schedule_time"))
+                scheduled_at = datetime.combine(now_local.date(), schedule_time, tzinfo=DISPLAY_TIMEZONE)
+                existing = self.db.get_daily_avatar_run(now_local.date())
+
+                if existing:
+                    if existing["status"] in {"updated", "skipped"}:
+                        log(
+                            f"Daily avatar cycle #{cycle}: today's run already exists "
+                            f"with status={existing['status']}, sleeping {poll_interval_seconds}s."
+                        )
+                        time.sleep(poll_interval_seconds)
+                        continue
+                    if existing["status"] == "in_progress":
+                        updated_at = existing.get("updated_at")
+                        if updated_at is not None:
+                            stale_after = updated_at + timedelta(
+                                seconds=self.DAILY_AVATAR_IN_PROGRESS_TIMEOUT_SECONDS
+                            )
+                            if now_local >= stale_after:
+                                log(
+                                    f"Daily avatar cycle #{cycle}: in_progress run became stale, "
+                                    f"marking as failed and retrying."
+                                )
+                                self.db.upsert_daily_avatar_run(
+                                    avatar_date=now_local.date(),
+                                    status="failed",
+                                    scheduled_time=schedule.get("schedule_time"),
+                                    forum_user_id=BOT_USER_ID,
+                                    avatar_number=existing.get("avatar_number"),
+                                    avatar_path=existing.get("avatar_path"),
+                                    avatar_url=existing.get("avatar_url"),
+                                    error_message="Daily avatar run timed out while in progress.",
+                                )
+                            else:
+                                wait_seconds = max(0, int((stale_after - now_local).total_seconds()))
+                                log(
+                                    f"Daily avatar cycle #{cycle}: today's run is still in progress, "
+                                    f"stale in {wait_seconds}s."
+                                )
+                                time.sleep(min(poll_interval_seconds, max(1, wait_seconds)))
+                                continue
+                        else:
+                            log(
+                                f"Daily avatar cycle #{cycle}: today's run is still in progress, "
+                                f"sleeping {poll_interval_seconds}s."
+                            )
+                            time.sleep(poll_interval_seconds)
+                            continue
+                    if existing["status"] == "failed":
+                        updated_at = existing.get("updated_at")
+                        if updated_at is not None:
+                            retry_at = updated_at + timedelta(seconds=self.DAILY_AVATAR_RETRY_DELAY_SECONDS)
+                            if now_local < retry_at:
+                                wait_seconds = max(0, int((retry_at - now_local).total_seconds()))
+                                log(
+                                    f"Daily avatar cycle #{cycle}: previous run failed, "
+                                    f"retry after {wait_seconds}s."
+                                )
+                                time.sleep(min(poll_interval_seconds, max(1, wait_seconds)))
+                                continue
+
+                if now_local < scheduled_at:
+                    log(
+                        f"Daily avatar cycle #{cycle}: waiting for schedule "
+                        f"{schedule_time.strftime('%H:%M')}, sleeping {poll_interval_seconds}s."
+                    )
+                    time.sleep(poll_interval_seconds)
+                    continue
+
+                log(
+                    f"Daily avatar cycle #{cycle}: schedule reached "
+                    f"({schedule_time.strftime('%H:%M')}), updating avatar."
+                )
+                result = self.update_daily_avatar(force=False, log=log)
+                log(
+                    f"Daily avatar cycle #{cycle} finished: "
+                    f"status={result.status}, avatar_number={result.avatar_number}, url={result.avatar_url}"
+                )
+                time.sleep(poll_interval_seconds)
+            except KeyboardInterrupt:
+                log("Daily avatar worker stopped by user.")
+                raise
+            except Exception as exc:
+                log(f"Daily avatar cycle #{cycle} failed: {exc}")
                 time.sleep(poll_interval_seconds)

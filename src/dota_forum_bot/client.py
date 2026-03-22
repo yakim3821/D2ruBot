@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import re
+import uuid
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from http.cookiejar import Cookie, CookieJar
@@ -379,6 +381,58 @@ class Dota2ForumClient:
             return data
         raise MessageSendError(f"Forum rejected topic creation: {data}")
 
+    def change_avatar(self, image_path: str) -> dict:
+        settings_page = self._request(urljoin(self.base_url, "/forum/settings/general/"))
+        if settings_page.status >= 400:
+            raise MessageSendError(
+                f"Failed to open avatar settings page. HTTP {settings_page.status}: {settings_page.text[:300]}"
+            )
+
+        try:
+            with open(image_path, "rb") as file:
+                file_bytes = file.read()
+        except OSError as exc:
+            raise MessageSendError(f"Failed to read avatar image {image_path}: {exc}") from exc
+
+        filename = os.path.basename(image_path) or "avatar.png"
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        boundary = f"----DotaForumBotBoundary{uuid.uuid4().hex}"
+        body = self._build_multipart_body(
+            boundary=boundary,
+            fields={"is_gif": "0"},
+            files=[
+                {
+                    "name": "image",
+                    "filename": filename,
+                    "content_type": content_type,
+                    "content": file_bytes,
+                }
+            ],
+        )
+        response = self._request(
+            urljoin(self.base_url, "/forum/api/user/changeAvatar"),
+            method="POST",
+            raw_body=body,
+            content_type=f"multipart/form-data; boundary={boundary}",
+            headers={
+                "Origin": self.base_url,
+                "Referer": settings_page.url,
+                "X-Requested-With": "XMLHttpRequest",
+            },
+        )
+
+        try:
+            data = json.loads(response.text)
+        except json.JSONDecodeError as exc:
+            raise MessageSendError(
+                f"Avatar change returned non-JSON response. HTTP {response.status}: {response.text[:300]}"
+            ) from exc
+
+        status = data.get("status")
+        if status == "success":
+            return data
+        raise MessageSendError(f"Forum rejected avatar change: {data}")
+
     def load_notifications(self) -> dict:
         response = self._request(
             urljoin(self.base_url, "/forum/api/notices/load"),
@@ -422,6 +476,41 @@ class Dota2ForumClient:
             return form, endpoint
 
         return None, None
+
+    @staticmethod
+    def _build_multipart_body(boundary: str, fields: dict[str, str], files: list[dict[str, object]]) -> bytes:
+        chunks: list[bytes] = []
+        boundary_bytes = boundary.encode("utf-8")
+
+        for name, value in fields.items():
+            chunks.extend(
+                [
+                    b"--" + boundary_bytes + b"\r\n",
+                    f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"),
+                    str(value).encode("utf-8"),
+                    b"\r\n",
+                ]
+            )
+
+        for file_info in files:
+            name = str(file_info["name"])
+            filename = str(file_info["filename"])
+            content_type = str(file_info.get("content_type") or "application/octet-stream")
+            content = bytes(file_info["content"])
+            chunks.extend(
+                [
+                    b"--" + boundary_bytes + b"\r\n",
+                    (
+                        f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
+                        f"Content-Type: {content_type}\r\n\r\n"
+                    ).encode("utf-8"),
+                    content,
+                    b"\r\n",
+                ]
+            )
+
+        chunks.append(b"--" + boundary_bytes + b"--\r\n")
+        return b"".join(chunks)
 
     @staticmethod
     def _extract_thread_id_from_url(url: str) -> int | None:
@@ -477,13 +566,19 @@ class Dota2ForumClient:
         headers: dict[str, str] | None = None,
         json_data: dict | None = None,
         form_data: dict[str, str] | None = None,
+        raw_body: bytes | None = None,
+        content_type: str | None = None,
     ) -> HttpResponse:
         body = None
         request_headers = dict(self.default_headers)
         if headers:
             request_headers.update(headers)
 
-        if json_data is not None:
+        if raw_body is not None:
+            body = raw_body
+            if content_type:
+                request_headers["Content-Type"] = content_type
+        elif json_data is not None:
             body = json.dumps(json_data).encode("utf-8")
             request_headers["Content-Type"] = "application/json"
         elif form_data is not None:

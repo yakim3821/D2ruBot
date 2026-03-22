@@ -9,7 +9,7 @@ from .config import Settings
 from .db import Database
 from .exceptions import ForumBotError
 from .llm_client import LLMClient
-from .services import DISPLAY_TIMEZONE, ForumSyncService
+from .services import BOT_USER_ID, DISPLAY_TIMEZONE, ForumSyncService
 from .ui import run_ui_server
 
 
@@ -160,6 +160,45 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "skip-daily-topic-today",
         help="Mark today's generated topic as already handled, so the worker skips today and waits for tomorrow.",
+    )
+
+    daily_avatar_parser = subparsers.add_parser(
+        "update-daily-avatar",
+        help="Rotate the bot avatar to the next image from src/img or set a specific avatar number.",
+    )
+    daily_avatar_parser.add_argument("--force", action="store_true", help="Update even if today's avatar run already exists.")
+    daily_avatar_parser.add_argument("--number", type=int, help="Specific avatar number from 1 to 31.")
+
+    daily_avatar_worker_parser = subparsers.add_parser(
+        "run-daily-avatar-worker",
+        help="Run a background worker that updates the avatar once per day at the configured time.",
+    )
+    daily_avatar_worker_parser.add_argument("--interval", type=int, default=30, help="Seconds between schedule checks.")
+
+    daily_avatar_schedule_parser = subparsers.add_parser(
+        "set-daily-avatar-schedule",
+        help="Enable/disable daily avatar schedule and set its update time without using the UI.",
+    )
+    daily_avatar_schedule_parser.add_argument(
+        "--time",
+        dest="schedule_time",
+        help="Update time in HH:MM format, for example 09:00.",
+    )
+    daily_avatar_schedule_group = daily_avatar_schedule_parser.add_mutually_exclusive_group()
+    daily_avatar_schedule_group.add_argument(
+        "--enabled",
+        action="store_true",
+        help="Enable the daily avatar schedule.",
+    )
+    daily_avatar_schedule_group.add_argument(
+        "--disabled",
+        action="store_true",
+        help="Disable the daily avatar schedule.",
+    )
+
+    subparsers.add_parser(
+        "skip-daily-avatar-today",
+        help="Mark today's avatar update as already handled, so the worker skips today and waits for tomorrow.",
     )
 
     ui_parser = subparsers.add_parser(
@@ -441,6 +480,53 @@ def main() -> int:
                 error_message="Skipped manually by operator.",
             )
             print(f"Daily topic marked as skipped for {topic_date.isoformat()}.")
+        elif args.command == "update-daily-avatar":
+            result = service.update_daily_avatar(
+                force=args.force,
+                avatar_number=args.number,
+            )
+            print(
+                f"Daily avatar finished: status={result.status}, "
+                f"avatar_number={result.avatar_number or '-'}, url={result.avatar_url or '-'}"
+            )
+            for detail in result.details:
+                print(detail)
+        elif args.command == "run-daily-avatar-worker":
+            print(f"Daily avatar worker started: interval={args.interval}s")
+            service.run_daily_avatar_worker(
+                poll_interval_seconds=args.interval,
+            )
+        elif args.command == "set-daily-avatar-schedule":
+            current = db.get_daily_avatar_schedule()
+            schedule_time = args.schedule_time or current.get("schedule_time") or "12:00"
+            if args.enabled:
+                enabled = True
+            elif args.disabled:
+                enabled = False
+            else:
+                enabled = bool(current.get("enabled"))
+            db.set_daily_avatar_schedule(enabled=enabled, schedule_time=schedule_time)
+            updated = db.get_daily_avatar_schedule()
+            print(
+                f"Daily avatar schedule updated: enabled={updated['enabled']}, "
+                f"time={updated['schedule_time']}"
+            )
+        elif args.command == "skip-daily-avatar-today":
+            today = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE)
+            avatar_date = today.date()
+            schedule = db.get_daily_avatar_schedule()
+            state = db.get_avatar_rotation_state(BOT_USER_ID)
+            db.upsert_daily_avatar_run(
+                avatar_date=avatar_date,
+                status="skipped",
+                scheduled_time=schedule.get("schedule_time"),
+                forum_user_id=BOT_USER_ID,
+                avatar_number=state.get("current_avatar_number") if state else None,
+                avatar_path=state.get("current_avatar_path") if state else None,
+                avatar_url=state.get("current_avatar_url") if state else None,
+                error_message="Skipped manually by operator.",
+            )
+            print(f"Daily avatar marked as skipped for {avatar_date.isoformat()}.")
 
         return 0
     except ForumBotError as exc:

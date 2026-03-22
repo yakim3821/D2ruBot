@@ -145,6 +145,30 @@ CREATE TABLE IF NOT EXISTS daily_topic_runs (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS avatar_rotation_state (
+    forum_user_id BIGINT PRIMARY KEY,
+    current_avatar_number INTEGER NOT NULL DEFAULT 0,
+    current_avatar_path TEXT,
+    current_avatar_url TEXT,
+    last_changed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS daily_avatar_runs (
+    id BIGSERIAL PRIMARY KEY,
+    avatar_date DATE NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    scheduled_time TEXT,
+    forum_user_id BIGINT,
+    avatar_number INTEGER,
+    avatar_path TEXT,
+    avatar_url TEXT,
+    error_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_topics_reply_flags
     ON topics (bot_replied_once, first_seen_at DESC);
 
@@ -170,7 +194,8 @@ ON CONFLICT (scope) DO NOTHING;
 INSERT INTO scheduler_settings (key, enabled, schedule_time, updated_at)
 VALUES
     ('daily_summary', FALSE, '12:00', NOW()),
-    ('daily_topic', FALSE, '18:00', NOW())
+    ('daily_topic', FALSE, '18:00', NOW()),
+    ('daily_avatar', FALSE, '12:00', NOW())
 ON CONFLICT (key) DO NOTHING;
 
 INSERT INTO topic_generation_prompts (

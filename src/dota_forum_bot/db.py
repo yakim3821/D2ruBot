@@ -961,6 +961,29 @@ class Database:
             return rows[0]
         return {"enabled": False, "schedule_time": "18:00", "updated_at": None}
 
+    def get_daily_avatar_schedule(self) -> dict[str, Any]:
+        sql = """
+        SELECT enabled, schedule_time, updated_at
+        FROM scheduler_settings
+        WHERE key = 'daily_avatar'
+        LIMIT 1
+        """
+        rows = self._fetch_all(sql, ())
+        if rows:
+            return rows[0]
+        return {"enabled": False, "schedule_time": "12:00", "updated_at": None}
+
+    def set_daily_avatar_schedule(self, enabled: bool, schedule_time: str) -> None:
+        sql = """
+        INSERT INTO scheduler_settings (key, enabled, schedule_time, updated_at)
+        VALUES ('daily_avatar', %s, %s, NOW())
+        ON CONFLICT (key) DO UPDATE
+        SET enabled = EXCLUDED.enabled,
+            schedule_time = EXCLUDED.schedule_time,
+            updated_at = NOW()
+        """
+        self._execute(sql, (enabled, schedule_time))
+
     def set_daily_topic_schedule(self, enabled: bool, schedule_time: str) -> None:
         sql = """
         INSERT INTO scheduler_settings (key, enabled, schedule_time, updated_at)
@@ -1055,6 +1078,148 @@ class Database:
             updated_at
         FROM daily_topic_runs
         ORDER BY topic_date DESC, updated_at DESC
+        LIMIT %s
+        """
+        return self._fetch_all(sql, (limit,))
+
+    def get_avatar_rotation_state(self, forum_user_id: int) -> dict[str, Any] | None:
+        sql = """
+        SELECT
+            forum_user_id,
+            current_avatar_number,
+            current_avatar_path,
+            current_avatar_url,
+            last_changed_at,
+            created_at,
+            updated_at
+        FROM avatar_rotation_state
+        WHERE forum_user_id = %s
+        LIMIT 1
+        """
+        rows = self._fetch_all(sql, (forum_user_id,))
+        return rows[0] if rows else None
+
+    def upsert_avatar_rotation_state(
+        self,
+        forum_user_id: int,
+        current_avatar_number: int,
+        current_avatar_path: str,
+        current_avatar_url: str | None = None,
+        last_changed_at=None,
+    ) -> None:
+        sql = """
+        INSERT INTO avatar_rotation_state (
+            forum_user_id,
+            current_avatar_number,
+            current_avatar_path,
+            current_avatar_url,
+            last_changed_at,
+            created_at,
+            updated_at
+        )
+        VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
+        ON CONFLICT (forum_user_id) DO UPDATE
+        SET current_avatar_number = EXCLUDED.current_avatar_number,
+            current_avatar_path = EXCLUDED.current_avatar_path,
+            current_avatar_url = COALESCE(EXCLUDED.current_avatar_url, avatar_rotation_state.current_avatar_url),
+            last_changed_at = COALESCE(EXCLUDED.last_changed_at, avatar_rotation_state.last_changed_at),
+            updated_at = NOW()
+        """
+        self._execute(
+            sql,
+            (
+                forum_user_id,
+                current_avatar_number,
+                current_avatar_path,
+                current_avatar_url,
+                last_changed_at,
+            ),
+        )
+
+    def get_daily_avatar_run(self, avatar_date) -> dict[str, Any] | None:
+        sql = """
+        SELECT
+            avatar_date,
+            status,
+            scheduled_time,
+            forum_user_id,
+            avatar_number,
+            avatar_path,
+            avatar_url,
+            error_message,
+            created_at,
+            updated_at
+        FROM daily_avatar_runs
+        WHERE avatar_date = %s
+        LIMIT 1
+        """
+        rows = self._fetch_all(sql, (avatar_date,))
+        return rows[0] if rows else None
+
+    def upsert_daily_avatar_run(
+        self,
+        avatar_date,
+        status: str,
+        scheduled_time: str | None = None,
+        forum_user_id: int | None = None,
+        avatar_number: int | None = None,
+        avatar_path: str | None = None,
+        avatar_url: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        sql = """
+        INSERT INTO daily_avatar_runs (
+            avatar_date,
+            status,
+            scheduled_time,
+            forum_user_id,
+            avatar_number,
+            avatar_path,
+            avatar_url,
+            error_message,
+            created_at,
+            updated_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+        ON CONFLICT (avatar_date) DO UPDATE
+        SET status = EXCLUDED.status,
+            scheduled_time = COALESCE(EXCLUDED.scheduled_time, daily_avatar_runs.scheduled_time),
+            forum_user_id = COALESCE(EXCLUDED.forum_user_id, daily_avatar_runs.forum_user_id),
+            avatar_number = COALESCE(EXCLUDED.avatar_number, daily_avatar_runs.avatar_number),
+            avatar_path = COALESCE(EXCLUDED.avatar_path, daily_avatar_runs.avatar_path),
+            avatar_url = COALESCE(EXCLUDED.avatar_url, daily_avatar_runs.avatar_url),
+            error_message = EXCLUDED.error_message,
+            updated_at = NOW()
+        """
+        self._execute(
+            sql,
+            (
+                avatar_date,
+                status,
+                scheduled_time,
+                forum_user_id,
+                avatar_number,
+                avatar_path,
+                avatar_url,
+                error_message,
+            ),
+        )
+
+    def get_recent_daily_avatar_runs(self, limit: int = 10) -> list[dict[str, Any]]:
+        sql = """
+        SELECT
+            avatar_date,
+            status,
+            scheduled_time,
+            forum_user_id,
+            avatar_number,
+            avatar_path,
+            avatar_url,
+            error_message,
+            created_at,
+            updated_at
+        FROM daily_avatar_runs
+        ORDER BY avatar_date DESC, updated_at DESC
         LIMIT %s
         """
         return self._fetch_all(sql, (limit,))
@@ -1185,6 +1350,37 @@ class Database:
             """
             INSERT INTO scheduler_settings (key, enabled, schedule_time, updated_at)
             VALUES ('daily_topic', FALSE, '18:00', NOW())
+            ON CONFLICT (key) DO NOTHING
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS avatar_rotation_state (
+                forum_user_id BIGINT PRIMARY KEY,
+                current_avatar_number INTEGER NOT NULL DEFAULT 0,
+                current_avatar_path TEXT,
+                current_avatar_url TEXT,
+                last_changed_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS daily_avatar_runs (
+                id BIGSERIAL PRIMARY KEY,
+                avatar_date DATE NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                scheduled_time TEXT,
+                forum_user_id BIGINT,
+                avatar_number INTEGER,
+                avatar_path TEXT,
+                avatar_url TEXT,
+                error_message TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            INSERT INTO scheduler_settings (key, enabled, schedule_time, updated_at)
+            VALUES ('daily_avatar', FALSE, '12:00', NOW())
             ON CONFLICT (key) DO NOTHING
             """,
             """
