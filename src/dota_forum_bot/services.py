@@ -466,11 +466,11 @@ class ForumSyncService:
                     status = "llm_replied"
                     replied += 1
 
-                self.client.send_message_to_thread(notification.post_url, reply_text)
+                self.client.send_message_to_thread(topic_record.topic_url, reply_text)
                 self.db.add_bot_reply(
                     forum_topic_id=topic_record.forum_topic_id,
                     target_type="topic",
-                    target_url=notification.post_url,
+                    target_url=topic_record.topic_url,
                     reply_text=reply_text,
                     status=f"quote_{status}",
                     forum_post_id=notification.forum_post_id,
@@ -495,7 +495,7 @@ class ForumSyncService:
                     self.db.add_bot_reply(
                         forum_topic_id=topic_record.forum_topic_id,
                         target_type="topic",
-                        target_url=notification.post_url,
+                        target_url=topic_record.topic_url,
                         reply_text="",
                         status="quote_reply_failed",
                         error_message=str(exc),
