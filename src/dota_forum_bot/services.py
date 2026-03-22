@@ -202,6 +202,22 @@ class ForumSyncService:
         return any(re.search(pattern, normalized, flags=re.IGNORECASE) for pattern in patterns)
 
     @staticmethod
+    def _build_quote_reply_message(
+        source_username: str | None,
+        source_user_id: int | None,
+        forum_post_id: int,
+        quoted_message_text: str,
+        reply_text: str,
+    ) -> str:
+        username = (source_username or "").strip() or "user"
+        body = (quoted_message_text or "").strip() or "..."
+        header = f'[QUOTE="{username}, post: {forum_post_id}'
+        if source_user_id is not None:
+            header += f", member: {source_user_id}"
+        header += '"]'
+        return f"{header}\n{body}\n[/QUOTE]\n\n{reply_text.strip()}"
+
+    @staticmethod
     def _normalize_generated_summary(body: str) -> str:
         text = body.replace("\r\n", "\n")
         text = text.replace("Краткое содержание темы", "")
@@ -462,6 +478,13 @@ class ForumSyncService:
                         quoted_text=quote_text or "(quoted fragment was not extracted)",
                         user_message_text=user_message_text,
                         style_profile=style_profile or {},
+                    )
+                    reply_text = self._build_quote_reply_message(
+                        source_username=notification.source_username,
+                        source_user_id=notification.source_user_id,
+                        forum_post_id=notification.forum_post_id,
+                        quoted_message_text=user_message_text,
+                        reply_text=reply_text,
                     )
                     status = "llm_replied"
                     replied += 1
