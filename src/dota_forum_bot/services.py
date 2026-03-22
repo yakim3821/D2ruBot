@@ -13,6 +13,7 @@ from .drafts import build_topic_draft
 from .exceptions import MessageSendError
 from .llm_client import LLMClient
 from .parsers import (
+    PostRecord,
     TopicPageRecord,
     TopicRecord,
     extract_post_message_text,
@@ -344,6 +345,20 @@ class ForumSyncService:
         posts.sort(key=lambda item: ((item.post_number or 0), item.forum_post_id))
         return first_record.topic, posts
 
+    @staticmethod
+    def _thread_post_to_post_record(post, is_topic_starter: bool) -> PostRecord:
+        return PostRecord(
+            forum_post_id=post.forum_post_id,
+            forum_topic_id=post.forum_topic_id,
+            author=post.author,
+            post_url=post.post_url,
+            content_raw=post.content_raw,
+            content_text=post.content_text,
+            created_at_forum=post.created_at_forum,
+            is_topic_starter=is_topic_starter,
+            reply_to_post_id=None,
+        )
+
     def reply_to_quote_notifications_with_llm(
         self,
         llm: LLMClient,
@@ -407,8 +422,8 @@ class ForumSyncService:
             try:
                 topic_record, posts = self._fetch_topic_thread_posts(notification.post_url)
                 self.db.upsert_topic(topic_record)
-                for post in posts:
-                    self.db.upsert_post(post)
+                for index, post in enumerate(posts):
+                    self.db.upsert_post(self._thread_post_to_post_record(post, is_topic_starter=index == 0))
 
                 target_post = next((post for post in posts if post.forum_post_id == notification.forum_post_id), None)
                 if target_post is None:

@@ -801,7 +801,7 @@ def _normalize_space(value: str) -> str:
 
 
 def _extract_topic_id_from_url(topic_url: str) -> int | None:
-    match = re.search(r"/threads/[^/]+\.(\d+)(?:/page-\d+)?/?(?:\?.*)?$", topic_url)
+    match = re.search(r"/threads/[^/]+\.(\d+)(?:/page-\d+)?/?(?:[?#].*)?$", topic_url)
     if not match:
         return None
     return int(match.group(1))
@@ -824,7 +824,10 @@ def _extract_total_pages(html_text: str) -> int:
 
 
 def _normalize_topic_url(topic_url: str) -> str:
-    return re.sub(r"/page-\d+/?(?:\?.*)?$", "/", topic_url).rstrip("/") + "/"
+    normalized = re.sub(r"#post-\d+$", "", topic_url)
+    normalized = re.sub(r"/page-\d+/?(?:\?.*)?$", "/", normalized)
+    normalized = re.sub(r"([?#].*)$", "", normalized)
+    return normalized.rstrip("/") + "/"
 
 
 def _to_absolute_url(path: str) -> str:
