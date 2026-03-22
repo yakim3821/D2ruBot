@@ -87,6 +87,26 @@ CREATE TABLE IF NOT EXISTS scheduler_settings (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS quote_reply_notifications (
+    id BIGSERIAL PRIMARY KEY,
+    forum_post_id BIGINT NOT NULL UNIQUE,
+    forum_topic_id BIGINT,
+    post_url TEXT NOT NULL,
+    topic_url TEXT,
+    source_username TEXT,
+    source_user_id BIGINT,
+    topic_title TEXT,
+    notification_text TEXT,
+    quote_text TEXT,
+    user_message_text TEXT,
+    reply_text TEXT,
+    status TEXT NOT NULL,
+    error_message TEXT,
+    replied_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS daily_summary_runs (
     id BIGSERIAL PRIMARY KEY,
     summary_date DATE NOT NULL UNIQUE,
@@ -139,6 +159,9 @@ CREATE INDEX IF NOT EXISTS idx_posts_user
 
 CREATE INDEX IF NOT EXISTS idx_bot_replies_topic
     ON bot_replies (forum_topic_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_quote_reply_notifications_status_updated
+    ON quote_reply_notifications (status, updated_at DESC);
 
 INSERT INTO scan_state (scope, last_scan_at)
 VALUES ('forum_section:taverna', NULL)

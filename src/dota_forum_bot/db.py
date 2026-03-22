@@ -173,10 +173,12 @@ class Database:
             forum_topic_id,
             title,
             topic_url,
+            author_user_id,
             created_at_forum,
             first_seen_at,
             forum_reply_count,
             reply_not_before,
+            reply_skip_reason,
             is_closed,
             is_pinned,
             bot_replied_once
@@ -292,6 +294,108 @@ class Database:
         """
         return self._fetch_all(sql, (limit,))
 
+    def create_quote_reply_notification(
+        self,
+        forum_post_id: int,
+        post_url: str,
+        source_username: str | None,
+        source_user_id: int | None,
+        topic_title: str | None,
+        notification_text: str,
+        status: str = "detected",
+    ) -> bool:
+        sql = """
+        INSERT INTO quote_reply_notifications (
+            forum_post_id,
+            post_url,
+            source_username,
+            source_user_id,
+            topic_title,
+            notification_text,
+            status,
+            created_at,
+            updated_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+        ON CONFLICT (forum_post_id) DO NOTHING
+        """
+        return self._execute_rowcount(
+            sql,
+            (
+                forum_post_id,
+                post_url,
+                source_username,
+                source_user_id,
+                topic_title,
+                notification_text,
+                status,
+            ),
+        ) > 0
+
+    def update_quote_reply_notification(
+        self,
+        forum_post_id: int,
+        status: str,
+        forum_topic_id: int | None = None,
+        topic_url: str | None = None,
+        quote_text: str | None = None,
+        user_message_text: str | None = None,
+        reply_text: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        sql = """
+        UPDATE quote_reply_notifications
+        SET status = %s,
+            forum_topic_id = COALESCE(%s, forum_topic_id),
+            topic_url = COALESCE(%s, topic_url),
+            quote_text = COALESCE(%s, quote_text),
+            user_message_text = COALESCE(%s, user_message_text),
+            reply_text = COALESCE(%s, reply_text),
+            error_message = %s,
+            updated_at = NOW(),
+            replied_at = CASE
+                WHEN %s IN ('smiley_replied', 'llm_replied') THEN NOW()
+                ELSE replied_at
+            END
+        WHERE forum_post_id = %s
+        """
+        self._execute(
+            sql,
+            (
+                status,
+                forum_topic_id,
+                topic_url,
+                quote_text,
+                user_message_text,
+                reply_text,
+                error_message,
+                status,
+                forum_post_id,
+            ),
+        )
+
+    def get_recent_quote_reply_notifications(self, limit: int = 50) -> list[dict[str, Any]]:
+        sql = """
+        SELECT
+            created_at,
+            updated_at,
+            replied_at,
+            forum_post_id,
+            forum_topic_id,
+            source_username,
+            topic_title,
+            post_url,
+            topic_url,
+            status,
+            LEFT(user_message_text, 220) AS user_message_preview,
+            LEFT(reply_text, 220) AS reply_preview,
+            error_message
+        FROM quote_reply_notifications
+        ORDER BY updated_at DESC, id DESC
+        LIMIT %s
+        """
+        return self._fetch_all(sql, (limit,))
+
     def topic_needs_reply_schedule(self, forum_topic_id: int) -> bool:
         sql = """
         SELECT reply_not_before
@@ -342,20 +446,35 @@ class Database:
         self,
         max_age_days: int = 3,
         limit: int = 20,
+        excluded_author_user_id: int | None = None,
     ) -> list[dict[str, Any]]:
-        sql = """
-        SELECT t.forum_topic_id, t.title, t.topic_url
+        filters = [
+            "t.bot_replied_once = FALSE",
+            "t.is_closed = FALSE",
+            "t.is_pinned = FALSE",
+            "COALESCE(t.created_at_forum, t.first_seen_at) >= NOW() - (%s * INTERVAL '1 day')",
+            "t.reply_not_before IS NOT NULL",
+            "t.reply_not_before <= NOW()",
+        ]
+        params: list[Any] = [max_age_days]
+        if excluded_author_user_id is not None:
+            filters.append("(t.author_user_id IS NULL OR t.author_user_id <> %s)")
+            params.append(excluded_author_user_id)
+        params.append(limit)
+
+        sql = f"""
+        SELECT
+            t.forum_topic_id,
+            t.title,
+            t.topic_url,
+            t.author_user_id,
+            t.reply_skip_reason
         FROM topics t
-        WHERE t.bot_replied_once = FALSE
-          AND t.is_closed = FALSE
-          AND t.is_pinned = FALSE
-          AND COALESCE(t.created_at_forum, t.first_seen_at) >= NOW() - (%s * INTERVAL '1 day')
-          AND t.reply_not_before IS NOT NULL
-          AND t.reply_not_before <= NOW()
+        WHERE {' AND '.join(filters)}
         ORDER BY COALESCE(t.created_at_forum, t.first_seen_at) DESC
         LIMIT %s
         """
-        return self._fetch_all(sql, (max_age_days, limit))
+        return self._fetch_all(sql, tuple(params))
 
     def get_topics_created_since(
         self,
@@ -428,6 +547,20 @@ class Database:
         WHERE forum_topic_id = %s
         """
         self._execute(sql, (reply_not_before, reply_skip_reason, forum_topic_id))
+
+    def skip_topics_by_author(self, forum_user_id: int, skip_reason: str) -> int:
+        sql = """
+        UPDATE topics
+        SET reply_not_before = NULL,
+            reply_skip_reason = %s
+        WHERE author_user_id = %s
+          AND bot_replied_once = FALSE
+          AND (
+              reply_not_before IS NOT NULL
+              OR reply_skip_reason IS DISTINCT FROM %s
+          )
+        """
+        return self._execute_rowcount(sql, (skip_reason, forum_user_id, skip_reason))
 
     def get_topics_ready_to_publish(self, limit: int = 10) -> list[dict[str, Any]]:
         sql = """
@@ -979,6 +1112,31 @@ class Database:
             )
             """,
             """
+            CREATE TABLE IF NOT EXISTS quote_reply_notifications (
+                id BIGSERIAL PRIMARY KEY,
+                forum_post_id BIGINT NOT NULL UNIQUE,
+                forum_topic_id BIGINT,
+                post_url TEXT NOT NULL,
+                topic_url TEXT,
+                source_username TEXT,
+                source_user_id BIGINT,
+                topic_title TEXT,
+                notification_text TEXT,
+                quote_text TEXT,
+                user_message_text TEXT,
+                reply_text TEXT,
+                status TEXT NOT NULL,
+                error_message TEXT,
+                replied_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_quote_reply_notifications_status_updated
+            ON quote_reply_notifications (status, updated_at DESC)
+            """,
+            """
             CREATE TABLE IF NOT EXISTS daily_summary_runs (
                 id BIGSERIAL PRIMARY KEY,
                 summary_date DATE NOT NULL UNIQUE,
@@ -1107,6 +1265,14 @@ class Database:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
             conn.commit()
+
+    def _execute_rowcount(self, sql: str, params: tuple[Any, ...]) -> int:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                rowcount = cur.rowcount
+            conn.commit()
+        return rowcount
 
     def _fetch_all(self, sql: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
         with self._connect() as conn:

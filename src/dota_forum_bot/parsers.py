@@ -97,6 +97,16 @@ class UserProfilePostRecord:
     activity_page_url: str
 
 
+@dataclass
+class QuoteNotificationRecord:
+    forum_post_id: int
+    post_url: str
+    source_username: str | None
+    source_user_id: int | None
+    topic_title: str | None
+    notification_text: str
+
+
 def parse_taverna_topics(section_html: str) -> list[TopicRecord]:
     list_match = re.search(
         r'<ul class="forum-section__list">(.*?)</ul>',
@@ -321,6 +331,111 @@ def parse_profile_posts_total_pages(html_text: str) -> int:
     if match:
         return int(match.group(1))
     return 1
+
+
+def parse_quote_notifications(html_text: str) -> list[QuoteNotificationRecord]:
+    records: list[QuoteNotificationRecord] = []
+    seen_post_ids: set[int] = set()
+
+    blocks = _extract_notification_item_blocks(html_text)
+    for block in blocks:
+        context_text = _normalize_space(_html_to_text(block))
+        normalized_text = context_text.lower().replace("ё", "е")
+        if "процитировал ваше сообщение" not in normalized_text:
+            continue
+
+        match = re.search(
+            r'href="((?:https://dota2\.ru)?/forum/posts/(\d+)/)"',
+            block,
+            flags=re.IGNORECASE,
+        )
+        if match is None:
+            continue
+
+        forum_post_id = int(match.group(2))
+        if forum_post_id in seen_post_ids:
+            continue
+
+        source_username = None
+        source_user_id = None
+        source_user = _extract_user_from_context(block)
+        if source_user is not None:
+            source_username = source_user.username
+            source_user_id = source_user.forum_user_id
+        else:
+            author_match = re.search(
+                r"пользователь\s+(.+?)\s+процитировал\s+ваше\s+сообщение",
+                context_text,
+                flags=re.IGNORECASE,
+            )
+            if author_match:
+                source_username = _normalize_space(author_match.group(1))
+
+        topic_title = None
+        topic_link_match = re.search(
+            r'href="([^"]*(?:threads/[^"]+?\.\d+|posts/\d+/)[^"]*)"[^>]*>(.*?)</a>',
+            block,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if topic_link_match:
+            topic_title = _extract_anchor_text(topic_link_match.group(2))
+        if not topic_title:
+            topic_match = re.search(
+                r"в\s+теме\s+(.+)$",
+                context_text,
+                flags=re.IGNORECASE,
+            )
+            if topic_match:
+                topic_title = _normalize_space(topic_match.group(1))
+
+        records.append(
+            QuoteNotificationRecord(
+                forum_post_id=forum_post_id,
+                post_url=_to_absolute_url(match.group(1)),
+                source_username=source_username,
+                source_user_id=source_user_id,
+                topic_title=topic_title,
+                notification_text=context_text,
+            )
+        )
+        seen_post_ids.add(forum_post_id)
+
+    return records
+
+
+def _extract_notification_item_blocks(html_text: str) -> list[str]:
+    starts = list(
+        re.finditer(
+            r'<div class="notices-body__items-item background">',
+            html_text,
+            flags=re.IGNORECASE,
+        )
+    )
+    blocks: list[str] = []
+    for index, match in enumerate(starts):
+        start = match.start()
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(html_text)
+        blocks.append(html_text[start:end])
+    return blocks
+
+
+def extract_quoted_text(raw_html: str) -> str:
+    parts = [
+        _html_to_text(match.group(1))
+        for match in re.finditer(r"<blockquote[^>]*>(.*?)</blockquote>", raw_html, flags=re.IGNORECASE | re.DOTALL)
+    ]
+    cleaned = [_normalize_space(part) for part in parts if _normalize_space(part)]
+    return "\n\n".join(cleaned)
+
+
+def extract_post_message_text(raw_html: str) -> str:
+    without_quotes = re.sub(
+        r"<blockquote[^>]*>.*?</blockquote>",
+        " ",
+        raw_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return _normalize_space(_html_to_text(without_quotes))
 
 
 def _extract_anchor_text(anchor_html: str) -> str:

@@ -15,6 +15,9 @@ from .llm_client import LLMClient
 from .parsers import (
     TopicPageRecord,
     TopicRecord,
+    extract_post_message_text,
+    extract_quoted_text,
+    parse_quote_notifications,
     parse_profile_posts_page,
     parse_profile_posts_total_pages,
     parse_taverna_topics,
@@ -26,10 +29,12 @@ from .style_profile import build_style_profile, profile_to_db_payload
 
 TAVERNA_URL = "https://dota2.ru/forum/forums/taverna.6/"
 TAVERNA_SCOPE = "forum_section:taverna"
-YAKIM38_PROFILE_POSTS_URL = "https://dota2.ru/forum/members/yakim38.815329/activity/posts/"
-YAKIM38_USER_ID = 815329
-YAKIM38_USERNAME = "Yakim38"
+NOTIFICATIONS_URL = "https://dota2.ru/forum/notifications/"
+BOT_PROFILE_POSTS_URL = "https://dota2.ru/forum/members/opera-mobile.847606/activity/posts/"
+BOT_USER_ID = 847606
+BOT_USERNAME = "Opera Mobile"
 DISPLAY_TIMEZONE = ZoneInfo("Europe/Moscow")
+BOT_AUTHORED_SKIP_REASON = "bot_authored_topic"
 
 
 @dataclass
@@ -86,6 +91,17 @@ class AutoReplyResult:
     scanned: int
     processed: int
     published: int
+    failed: int
+    details: list[str] = field(default_factory=list)
+
+
+@dataclass
+class QuoteReplyResult:
+    scanned: int
+    new_notifications: int
+    processed: int
+    replied: int
+    ignored: int
     failed: int
     details: list[str] = field(default_factory=list)
 
@@ -166,6 +182,22 @@ class ForumSyncService:
         if len(text) <= limit:
             return text
         return text[: limit - 1].rstrip() + "…"
+
+    @staticmethod
+    def _looks_like_bot_accusation(user_message_text: str) -> bool:
+        normalized = re.sub(r"\s+", " ", (user_message_text or "").lower().replace("ё", "е")).strip()
+        if not normalized or "бот" not in normalized:
+            return False
+
+        patterns = [
+            r"\b(?:ты|тебя|тебе|тобой|твой|твоя|твое|твои)\b.{0,20}\bбот\w*",
+            r"\bбот\w*\b.{0,20}\b(?:ты|тебя|тебе|тобой|твой|твоя|твое|твои)\b",
+            r"\bopera(?:\s|-)?mobile\b.{0,20}\bбот\w*",
+            r"\bбот\w*\b.{0,20}\bopera(?:\s|-)?mobile\b",
+            r"\bopera\b.{0,20}\bбот\w*",
+            r"\bбот\w*\b.{0,20}\bopera\b",
+        ]
+        return any(re.search(pattern, normalized, flags=re.IGNORECASE) for pattern in patterns)
 
     @staticmethod
     def _normalize_generated_summary(body: str) -> str:
@@ -311,6 +343,176 @@ class ForumSyncService:
         posts.sort(key=lambda item: ((item.post_number or 0), item.forum_post_id))
         return first_record.topic, posts
 
+    def reply_to_quote_notifications_with_llm(
+        self,
+        llm: LLMClient,
+        limit: int = 20,
+        log=None,
+    ) -> QuoteReplyResult:
+        response = self.client.fetch_page(NOTIFICATIONS_URL)
+        notifications = parse_quote_notifications(response.text)
+        style_profile: dict | None = None
+
+        scanned = len(notifications)
+        new_notifications = 0
+        processed = 0
+        replied = 0
+        ignored = 0
+        failed = 0
+        details: list[str] = []
+
+        summary = f"Quote notifications fetched: total={scanned}"
+        details.append(summary)
+        self._emit(log, summary)
+
+        for notification in notifications:
+            if processed >= limit:
+                break
+
+            inserted = self.db.create_quote_reply_notification(
+                forum_post_id=notification.forum_post_id,
+                post_url=notification.post_url,
+                source_username=notification.source_username,
+                source_user_id=notification.source_user_id,
+                topic_title=notification.topic_title,
+                notification_text=notification.notification_text,
+            )
+            if not inserted:
+                continue
+
+            new_notifications += 1
+            processed += 1
+            self.db.update_quote_reply_notification(notification.forum_post_id, status="in_progress")
+            start_message = (
+                f"Quote post {notification.forum_post_id}: "
+                f"user={notification.source_username or '-'} topic={notification.topic_title or '-'}"
+            )
+            details.append(start_message)
+            self._emit(log, start_message)
+
+            topic_record: TopicRecord | None = None
+            quote_text = ""
+            user_message_text = ""
+            try:
+                topic_record, posts = self._fetch_topic_thread_posts(notification.post_url)
+                self.db.upsert_topic(topic_record)
+                for post in posts:
+                    self.db.upsert_post(post)
+
+                target_post = next((post for post in posts if post.forum_post_id == notification.forum_post_id), None)
+                if target_post is None:
+                    raise ValueError(f"Quoted post {notification.forum_post_id} was not found in thread.")
+
+                quote_text = extract_quoted_text(target_post.content_raw)
+                user_message_text = extract_post_message_text(target_post.content_raw) or target_post.content_text
+                starter_post_text = posts[0].content_text if posts else ""
+
+                if style_profile is None and not self._looks_like_bot_accusation(user_message_text):
+                    style_profile = self.db.get_user_style_profile(BOT_USER_ID)
+                    if style_profile is None:
+                        raise ValueError("Bot style profile is not built yet. Run build-yakim-profile first.")
+
+                if self._looks_like_bot_accusation(user_message_text):
+                    status = "ignored_bot_accusation"
+                    ignored += 1
+                    self.db.update_quote_reply_notification(
+                        forum_post_id=notification.forum_post_id,
+                        status=status,
+                        forum_topic_id=topic_record.forum_topic_id,
+                        topic_url=topic_record.topic_url,
+                        quote_text=quote_text,
+                        user_message_text=user_message_text,
+                        reply_text="",
+                        error_message=None,
+                    )
+                    skip_message = "  Ignored because the user called the bot a bot."
+                    details.append(skip_message)
+                    self._emit(log, skip_message)
+                    continue
+                else:
+                    reply_text = llm.generate_quote_reply(
+                        topic_title=topic_record.title,
+                        starter_post_text=starter_post_text,
+                        quoted_text=quote_text or "(quoted fragment was not extracted)",
+                        user_message_text=user_message_text,
+                        style_profile=style_profile or {},
+                    )
+                    status = "llm_replied"
+                    replied += 1
+
+                self.client.send_message_to_thread(notification.post_url, reply_text)
+                self.db.add_bot_reply(
+                    forum_topic_id=topic_record.forum_topic_id,
+                    target_type="topic",
+                    target_url=notification.post_url,
+                    reply_text=reply_text,
+                    status=f"quote_{status}",
+                    forum_post_id=notification.forum_post_id,
+                )
+                self.db.update_quote_reply_notification(
+                    forum_post_id=notification.forum_post_id,
+                    status=status,
+                    forum_topic_id=topic_record.forum_topic_id,
+                    topic_url=topic_record.topic_url,
+                    quote_text=quote_text,
+                    user_message_text=user_message_text,
+                    reply_text=reply_text,
+                    error_message=None,
+                )
+                success_message = f"  Replied successfully with status={status}."
+                details.append(success_message)
+                self._emit(log, success_message)
+                time.sleep(10)
+            except MessageSendError as exc:
+                failed += 1
+                if topic_record is not None:
+                    self.db.add_bot_reply(
+                        forum_topic_id=topic_record.forum_topic_id,
+                        target_type="topic",
+                        target_url=notification.post_url,
+                        reply_text="",
+                        status="quote_reply_failed",
+                        error_message=str(exc),
+                        forum_post_id=notification.forum_post_id,
+                    )
+                self.db.update_quote_reply_notification(
+                    forum_post_id=notification.forum_post_id,
+                    status="reply_failed",
+                    forum_topic_id=topic_record.forum_topic_id if topic_record else None,
+                    topic_url=topic_record.topic_url if topic_record else None,
+                    quote_text=quote_text or None,
+                    user_message_text=user_message_text or None,
+                    error_message=str(exc),
+                )
+                error_message = f"  Reply failed: {exc}"
+                details.append(error_message)
+                self._emit(log, error_message)
+                time.sleep(10)
+            except Exception as exc:
+                failed += 1
+                self.db.update_quote_reply_notification(
+                    forum_post_id=notification.forum_post_id,
+                    status="processing_failed",
+                    forum_topic_id=topic_record.forum_topic_id if topic_record else None,
+                    topic_url=topic_record.topic_url if topic_record else None,
+                    quote_text=quote_text or None,
+                    user_message_text=user_message_text or None,
+                    error_message=str(exc),
+                )
+                error_message = f"  Quote processing failed: {exc}"
+                details.append(error_message)
+                self._emit(log, error_message)
+
+        return QuoteReplyResult(
+            scanned=scanned,
+            new_notifications=new_notifications,
+            processed=processed,
+            replied=replied,
+            ignored=ignored,
+            failed=failed,
+            details=details,
+        )
+
     def _explain_auto_reply_eligibility(self, topic: dict, max_age_days: int) -> tuple[bool, list[str]]:
         reasons: list[str] = []
         if topic.get("bot_replied_once"):
@@ -319,6 +521,10 @@ class ForumSyncService:
             reasons.append("closed")
         if topic.get("is_pinned"):
             reasons.append("pinned")
+        if topic.get("author_user_id") == BOT_USER_ID:
+            reasons.append(BOT_AUTHORED_SKIP_REASON)
+        elif topic.get("reply_skip_reason") == BOT_AUTHORED_SKIP_REASON:
+            reasons.append(BOT_AUTHORED_SKIP_REASON)
 
         created_at = topic.get("created_at_forum") or topic.get("first_seen_at")
         if created_at is None:
@@ -350,10 +556,20 @@ class ForumSyncService:
         for topic in topics:
             exists = self.db.topic_exists(topic.forum_topic_id)
             self.db.upsert_topic(topic)
-            if not exists or self.db.topic_needs_reply_schedule(topic.forum_topic_id):
+            if topic.author is not None and topic.author.forum_user_id == BOT_USER_ID:
+                self.db.set_topic_reply_schedule(
+                    topic.forum_topic_id,
+                    reply_not_before=None,
+                    reply_skip_reason=BOT_AUTHORED_SKIP_REASON,
+                )
+                self._emit(
+                    log if 'log' in locals() else None,
+                    f"Skipped auto-reply for bot-authored topic {topic.forum_topic_id}.",
+                )
+            elif not exists or self.db.topic_needs_reply_schedule(topic.forum_topic_id):
                 delay_minutes = self._human_reply_delay_minutes(topic.forum_reply_count)
                 reply_not_before = datetime.now(timezone.utc) + timedelta(minutes=delay_minutes)
-                self.db.set_topic_reply_schedule(topic.forum_topic_id, reply_not_before)
+                self.db.set_topic_reply_schedule(topic.forum_topic_id, reply_not_before, reply_skip_reason=None)
                 self._emit(
                     log if 'log' in locals() else None,
                     f"Scheduled topic {topic.forum_topic_id} reply after {delay_minutes} minutes "
@@ -497,7 +713,7 @@ class ForumSyncService:
         return PublishResult(processed=processed, published=published, failed=failed)
 
     def sync_user_profile_posts(self, max_pages: int = 3) -> ProfileSyncResult:
-        first_page = self.client.fetch_page(YAKIM38_PROFILE_POSTS_URL)
+        first_page = self.client.fetch_page(BOT_PROFILE_POSTS_URL)
         total_pages = parse_profile_posts_total_pages(first_page.text)
         pages_to_scan = min(max_pages, total_pages)
         saved = 0
@@ -505,14 +721,14 @@ class ForumSyncService:
         for page_num in range(1, pages_to_scan + 1):
             if page_num == 1:
                 response = first_page
-                page_url = YAKIM38_PROFILE_POSTS_URL
+                page_url = BOT_PROFILE_POSTS_URL
             else:
-                page_url = f"{YAKIM38_PROFILE_POSTS_URL}page-{page_num}"
+                page_url = f"{BOT_PROFILE_POSTS_URL}page-{page_num}"
                 response = self.client.fetch_page(page_url)
 
             posts = parse_profile_posts_page(
-                profile_user_id=YAKIM38_USER_ID,
-                profile_username=YAKIM38_USERNAME,
+                profile_user_id=BOT_USER_ID,
+                profile_username=BOT_USERNAME,
                 page_url=page_url,
                 html_text=response.text,
             )
@@ -523,15 +739,15 @@ class ForumSyncService:
         return ProfileSyncResult(pages_scanned=pages_to_scan, posts_saved=saved, total_pages=total_pages)
 
     def build_yakim_style_profile(self, limit: int | None = None) -> StyleProfileResult:
-        posts = self.db.get_user_profile_posts(YAKIM38_USER_ID, limit=limit)
+        posts = self.db.get_user_profile_posts(BOT_USER_ID, limit=limit)
         messages = [post["content_text"] for post in posts if post.get("content_text")]
         topics = [post["topic_title"] for post in posts if post.get("topic_title")]
 
         profile = build_style_profile(messages=messages, topic_titles=topics)
         payload = profile_to_db_payload(profile)
         self.db.upsert_user_style_profile(
-            forum_user_id=YAKIM38_USER_ID,
-            source_profile_url=YAKIM38_PROFILE_POSTS_URL,
+            forum_user_id=BOT_USER_ID,
+            source_profile_url=BOT_PROFILE_POSTS_URL,
             style_summary=payload["style_summary"],
             lexicon=payload["lexicon"],
             signature_phrases=payload["signature_phrases"],
@@ -542,7 +758,7 @@ class ForumSyncService:
             confidence_score=payload["confidence_score"],
         )
         return StyleProfileResult(
-            forum_user_id=YAKIM38_USER_ID,
+            forum_user_id=BOT_USER_ID,
             posts_used=len(messages),
             confidence_score=profile.confidence_score,
         )
@@ -554,9 +770,9 @@ class ForumSyncService:
         limit: int = 5,
     ) -> LLMDraftResult:
         topics = self.db.get_topics_pending_llm_draft(limit=limit)
-        style_profile = self.db.get_user_style_profile(YAKIM38_USER_ID)
+        style_profile = self.db.get_user_style_profile(BOT_USER_ID)
         if style_profile is None:
-            raise ValueError("Yakim38 style profile is not built yet. Run build-yakim-profile first.")
+            raise ValueError("Bot style profile is not built yet. Run build-yakim-profile first.")
 
         processed = 0
         sent = 0
@@ -673,10 +889,15 @@ class ForumSyncService:
         log=None,
     ) -> AutoReplyResult:
         scan_result = self.scan_taverna()
-        topics = self.db.get_recent_topics_pending_auto_reply(max_age_days=max_age_days, limit=limit)
-        style_profile = self.db.get_user_style_profile(YAKIM38_USER_ID)
+        skipped_topics = self.db.skip_topics_by_author(BOT_USER_ID, BOT_AUTHORED_SKIP_REASON)
+        topics = self.db.get_recent_topics_pending_auto_reply(
+            max_age_days=max_age_days,
+            limit=limit,
+            excluded_author_user_id=BOT_USER_ID,
+        )
+        style_profile = self.db.get_user_style_profile(BOT_USER_ID)
         if style_profile is None:
-            raise ValueError("Yakim38 style profile is not built yet. Run build-yakim-profile first.")
+            raise ValueError("Bot style profile is not built yet. Run build-yakim-profile first.")
 
         processed = 0
         published = 0
@@ -685,7 +906,8 @@ class ForumSyncService:
 
         summary = (
             f"Scan result: found={scan_result.found}, saved={scan_result.inserted_or_updated}, "
-            f"new={scan_result.new_topics}, reply_candidates={len(topics)}"
+            f"new={scan_result.new_topics}, bot_authored_skipped={skipped_topics}, "
+            f"reply_candidates={len(topics)}"
         )
         details.append(summary)
         self._emit(log, summary)
@@ -708,6 +930,8 @@ class ForumSyncService:
                     f"reply_count={topic.get('forum_reply_count')} | "
                     f"pinned={topic['is_pinned']} | closed={topic['is_closed']} | "
                     f"replied={topic['bot_replied_once']} | "
+                    f"author_user_id={topic.get('author_user_id')} | "
+                    f"skip_reason={topic.get('reply_skip_reason') or 'None'} | "
                     f"wait_minutes={wait_minutes if wait_minutes is not None else 'None'} | "
                     f"reply_not_before={self._format_dt(topic.get('reply_not_before'))} | "
                     f"created={self._format_dt(topic.get('created_at_forum'))} | "
@@ -826,6 +1050,45 @@ class ForumSyncService:
                 raise
             except Exception as exc:
                 log(f"Cycle #{cycle} failed: {exc}")
+                log(f"Sleeping for {poll_interval_seconds} seconds before retry.")
+                time.sleep(poll_interval_seconds)
+
+    def run_quote_reply_worker(
+        self,
+        llm: LLMClient,
+        poll_interval_seconds: int = 30,
+        batch_limit: int = 20,
+    ) -> None:
+        cycle = 0
+
+        def log(message: str) -> None:
+            timestamp = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S %Z")
+            print(f"[{timestamp}] {message}")
+
+        while True:
+            cycle += 1
+            try:
+                log(
+                    f"Quote worker cycle #{cycle} started: interval={poll_interval_seconds}s, "
+                    f"batch_limit={batch_limit}"
+                )
+                result = self.reply_to_quote_notifications_with_llm(
+                    llm=llm,
+                    limit=batch_limit,
+                    log=log,
+                )
+                log(
+                    f"Quote worker cycle #{cycle} finished: scanned={result.scanned}, "
+                    f"new={result.new_notifications}, processed={result.processed}, "
+                    f"replied={result.replied}, ignored={result.ignored}, failed={result.failed}"
+                )
+                log(f"Sleeping for {poll_interval_seconds} seconds before next cycle.")
+                time.sleep(poll_interval_seconds)
+            except KeyboardInterrupt:
+                log("Quote worker stopped by user.")
+                raise
+            except Exception as exc:
+                log(f"Quote worker cycle #{cycle} failed: {exc}")
                 log(f"Sleeping for {poll_interval_seconds} seconds before retry.")
                 time.sleep(poll_interval_seconds)
 

@@ -4,14 +4,23 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="63386f1a-d5f6-4c51-aa31-f06c006e8555" name="Changes" comment="автопостинг тем" />
+    <list default="true" id="63386f1a-d5f6-4c51-aa31-f06c006e8555" name="Changes" comment="автопостинг тем">
+      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docker/postgres/init/001_schema.sql" beforeDir="false" afterPath="$PROJECT_DIR$/docker/postgres/init/001_schema.sql" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/cli.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/cli.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/db.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/db.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/llm_client.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/llm_client.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/parsers.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/parsers.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/services.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/services.py" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
   <component name="EmbeddingIndexingInfo">
-    <option name="cachedIndexableFilesCount" value="49" />
+    <option name="cachedIndexableFilesCount" value="50" />
   </component>
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
@@ -77,7 +86,8 @@
       <workItem from="1768072375584" duration="2918000" />
       <workItem from="1768075867204" duration="7000" />
       <workItem from="1774043544193" duration="40215000" />
-      <workItem from="1774189123910" duration="2522000" />
+      <workItem from="1774189123910" duration="5918000" />
+      <workItem from="1774203383186" duration="1687000" />
     </task>
     <task id="LOCAL-00001" summary="Start">
       <option name="closed" value="true" />
@@ -167,7 +177,15 @@
       <option name="project" value="LOCAL" />
       <updated>1774191172007</updated>
     </task>
-    <option name="localTasksCounter" value="12" />
+    <task id="LOCAL-00012" summary="автопостинг тем">
+      <option name="closed" value="true" />
+      <created>1774191871115</created>
+      <option name="number" value="00012" />
+      <option name="presentableId" value="LOCAL-00012" />
+      <option name="project" value="LOCAL" />
+      <updated>1774191871115</updated>
+    </task>
+    <option name="localTasksCounter" value="13" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">

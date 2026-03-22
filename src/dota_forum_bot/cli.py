@@ -71,6 +71,19 @@ def build_parser() -> argparse.ArgumentParser:
     worker_parser.add_argument("--max-age-days", type=int, default=3, help="Reply only to topics not older than this many days.")
     worker_parser.add_argument("--batch-limit", type=int, default=5, help="Maximum number of fresh topics to process per cycle.")
 
+    quote_reply_parser = subparsers.add_parser(
+        "reply-to-quote-notifications",
+        help="Check forum notifications and reply to users who quoted the bot.",
+    )
+    quote_reply_parser.add_argument("--limit", type=int, default=20, help="Maximum number of new quote notifications to process.")
+
+    quote_reply_worker_parser = subparsers.add_parser(
+        "run-quote-reply-worker",
+        help="Run a background worker that checks quote notifications and replies to them.",
+    )
+    quote_reply_worker_parser.add_argument("--interval", type=int, default=30, help="Seconds between cycles and retry delay after errors.")
+    quote_reply_worker_parser.add_argument("--batch-limit", type=int, default=20, help="Maximum number of new quote notifications to process per cycle.")
+
     daily_summary_parser = subparsers.add_parser(
         "publish-daily-summary",
         help="Build and publish a daily Taverna summary thread for topics from the last 24 hours.",
@@ -282,6 +295,37 @@ def main() -> int:
                 llm=llm,
                 poll_interval_seconds=args.interval,
                 max_age_days=args.max_age_days,
+                batch_limit=args.batch_limit,
+            )
+        elif args.command == "reply-to-quote-notifications":
+            llm = LLMClient(
+                api_key=settings.deepseek_api_key,
+                model=settings.deepseek_model,
+                base_url=settings.deepseek_base_url,
+            )
+            result = service.reply_to_quote_notifications_with_llm(
+                llm=llm,
+                limit=args.limit,
+            )
+            print(
+                f"Quote replies finished: scanned={result.scanned}, new={result.new_notifications}, "
+                f"processed={result.processed}, replied={result.replied}, ignored={result.ignored}, failed={result.failed}"
+            )
+            for detail in result.details:
+                print(detail)
+        elif args.command == "run-quote-reply-worker":
+            llm = LLMClient(
+                api_key=settings.deepseek_api_key,
+                model=settings.deepseek_model,
+                base_url=settings.deepseek_base_url,
+            )
+            print(
+                f"Quote reply worker started: interval={args.interval}s, "
+                f"batch_limit={args.batch_limit}"
+            )
+            service.run_quote_reply_worker(
+                llm=llm,
+                poll_interval_seconds=args.interval,
                 batch_limit=args.batch_limit,
             )
         elif args.command == "publish-daily-summary":
