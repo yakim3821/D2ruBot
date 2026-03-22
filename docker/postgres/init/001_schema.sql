@@ -80,6 +80,51 @@ CREATE TABLE IF NOT EXISTS scan_state (
     cursor_payload JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
+CREATE TABLE IF NOT EXISTS scheduler_settings (
+    key TEXT PRIMARY KEY,
+    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    schedule_time TEXT NOT NULL DEFAULT '12:00',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS daily_summary_runs (
+    id BIGSERIAL PRIMARY KEY,
+    summary_date DATE NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    scheduled_time TEXT,
+    topic_title TEXT,
+    topic_url TEXT,
+    source_topic_count INTEGER NOT NULL DEFAULT 0,
+    summary_text TEXT,
+    error_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS topic_generation_prompts (
+    id BIGSERIAL PRIMARY KEY,
+    prompt_code TEXT NOT NULL UNIQUE,
+    prompt_name TEXT NOT NULL,
+    prompt_text TEXT NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS daily_topic_runs (
+    id BIGSERIAL PRIMARY KEY,
+    topic_date DATE NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    scheduled_time TEXT,
+    prompt_code TEXT REFERENCES topic_generation_prompts(prompt_code),
+    topic_title TEXT,
+    topic_body TEXT,
+    topic_url TEXT,
+    error_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_topics_reply_flags
     ON topics (bot_replied_once, first_seen_at DESC);
 
@@ -98,3 +143,61 @@ CREATE INDEX IF NOT EXISTS idx_bot_replies_topic
 INSERT INTO scan_state (scope, last_scan_at)
 VALUES ('forum_section:taverna', NULL)
 ON CONFLICT (scope) DO NOTHING;
+
+INSERT INTO scheduler_settings (key, enabled, schedule_time, updated_at)
+VALUES
+    ('daily_summary', FALSE, '12:00', NOW()),
+    ('daily_topic', FALSE, '18:00', NOW())
+ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO topic_generation_prompts (
+    prompt_code,
+    prompt_name,
+    prompt_text,
+    is_active,
+    created_at,
+    updated_at
+)
+VALUES (
+    'daily_relationship_topic',
+    'Daily relationship forum topic',
+    'тема для форума (в стиле dota2.ru), связанную с девушками / отношениями / одиночеством.
+
+Требования:
+
+Заголовок:
+максимально короткий (2–6 слов)
+простой, разговорный, без сложных формулировок
+можно использовать слова: «девушка», «тян», «тянка»
+допускается грубость или провокация
+стиль должен выглядеть как реальный пользовательский заголовок
+
+Форматы заголовка (выбери один):
+
+вопрос (например: «почему тян игнорят»)
+короткая проблема («девушка не отвечает»)
+эмоциональный заголовок («тян сломала жизнь»)
+обсуждение («идеальная девушка»)
+Первый пост:
+3–8 предложений
+пишется от первого лица
+стиль: разговорный, немного небрежный
+допускаются ошибки или упрощённая речь
+содержание:
+либо личная ситуация
+либо вопрос к форуму
+либо жалоба / рассуждение
+Добавь элементы:
+неуверенность / обида / злость / растерянность
+обращение к аудитории («пацаны», «ребят»)
+открытый вопрос в конце
+Не делай текст слишком умным или литературным — он должен выглядеть как пост обычного юзера форума.',
+    TRUE,
+    NOW(),
+    NOW()
+)
+ON CONFLICT (prompt_code) DO UPDATE
+SET prompt_name = EXCLUDED.prompt_name,
+    prompt_text = EXCLUDED.prompt_text,
+    is_active = EXCLUDED.is_active,
+    updated_at = NOW();

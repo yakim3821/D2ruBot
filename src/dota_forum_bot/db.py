@@ -395,6 +395,31 @@ class Database:
         """
         return self._fetch_all(sql, tuple(params))
 
+    def get_recent_topic_titles(
+        self,
+        hours: int,
+        forum_section_id: int | None = None,
+        limit: int = 50,
+    ) -> list[str]:
+        filters = [
+            "COALESCE(created_at_forum, first_seen_at) >= NOW() - (%s * INTERVAL '1 hour')",
+        ]
+        params: list[Any] = [hours]
+        if forum_section_id is not None:
+            filters.append("forum_section_id = %s")
+            params.append(forum_section_id)
+        params.append(limit)
+
+        sql = f"""
+        SELECT title
+        FROM topics
+        WHERE {' AND '.join(filters)}
+        ORDER BY COALESCE(created_at_forum, first_seen_at) DESC
+        LIMIT %s
+        """
+        rows = self._fetch_all(sql, tuple(params))
+        return [row["title"] for row in rows if row.get("title")]
+
     def set_topic_reply_schedule(self, forum_topic_id: int, reply_not_before, reply_skip_reason: str | None = None) -> None:
         sql = """
         UPDATE topics
@@ -791,6 +816,127 @@ class Database:
         """
         return self._fetch_all(sql, (limit,))
 
+    def get_daily_topic_schedule(self) -> dict[str, Any]:
+        sql = """
+        SELECT enabled, schedule_time, updated_at
+        FROM scheduler_settings
+        WHERE key = 'daily_topic'
+        LIMIT 1
+        """
+        rows = self._fetch_all(sql, ())
+        if rows:
+            return rows[0]
+        return {"enabled": False, "schedule_time": "18:00", "updated_at": None}
+
+    def set_daily_topic_schedule(self, enabled: bool, schedule_time: str) -> None:
+        sql = """
+        INSERT INTO scheduler_settings (key, enabled, schedule_time, updated_at)
+        VALUES ('daily_topic', %s, %s, NOW())
+        ON CONFLICT (key) DO UPDATE
+        SET enabled = EXCLUDED.enabled,
+            schedule_time = EXCLUDED.schedule_time,
+            updated_at = NOW()
+        """
+        self._execute(sql, (enabled, schedule_time))
+
+    def get_daily_topic_run(self, topic_date) -> dict[str, Any] | None:
+        sql = """
+        SELECT
+            topic_date,
+            status,
+            scheduled_time,
+            prompt_code,
+            topic_title,
+            topic_body,
+            topic_url,
+            error_message,
+            created_at,
+            updated_at
+        FROM daily_topic_runs
+        WHERE topic_date = %s
+        LIMIT 1
+        """
+        rows = self._fetch_all(sql, (topic_date,))
+        return rows[0] if rows else None
+
+    def upsert_daily_topic_run(
+        self,
+        topic_date,
+        status: str,
+        scheduled_time: str | None = None,
+        prompt_code: str | None = None,
+        topic_title: str | None = None,
+        topic_body: str | None = None,
+        topic_url: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        sql = """
+        INSERT INTO daily_topic_runs (
+            topic_date,
+            status,
+            scheduled_time,
+            prompt_code,
+            topic_title,
+            topic_body,
+            topic_url,
+            error_message,
+            created_at,
+            updated_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+        ON CONFLICT (topic_date) DO UPDATE
+        SET status = EXCLUDED.status,
+            scheduled_time = COALESCE(EXCLUDED.scheduled_time, daily_topic_runs.scheduled_time),
+            prompt_code = COALESCE(EXCLUDED.prompt_code, daily_topic_runs.prompt_code),
+            topic_title = COALESCE(EXCLUDED.topic_title, daily_topic_runs.topic_title),
+            topic_body = COALESCE(EXCLUDED.topic_body, daily_topic_runs.topic_body),
+            topic_url = COALESCE(EXCLUDED.topic_url, daily_topic_runs.topic_url),
+            error_message = EXCLUDED.error_message,
+            updated_at = NOW()
+        """
+        self._execute(
+            sql,
+            (
+                topic_date,
+                status,
+                scheduled_time,
+                prompt_code,
+                topic_title,
+                topic_body,
+                topic_url,
+                error_message,
+            ),
+        )
+
+    def get_recent_daily_topic_runs(self, limit: int = 10) -> list[dict[str, Any]]:
+        sql = """
+        SELECT
+            topic_date,
+            status,
+            scheduled_time,
+            prompt_code,
+            topic_title,
+            topic_url,
+            error_message,
+            created_at,
+            updated_at
+        FROM daily_topic_runs
+        ORDER BY topic_date DESC, updated_at DESC
+        LIMIT %s
+        """
+        return self._fetch_all(sql, (limit,))
+
+    def get_active_topic_prompt(self, prompt_code: str) -> dict[str, Any] | None:
+        sql = """
+        SELECT prompt_code, prompt_name, prompt_text, is_active, created_at, updated_at
+        FROM topic_generation_prompts
+        WHERE prompt_code = %s
+          AND is_active = TRUE
+        LIMIT 1
+        """
+        rows = self._fetch_all(sql, (prompt_code,))
+        return rows[0] if rows else None
+
     def ensure_runtime_schema(self) -> None:
         statements = [
             """
@@ -851,6 +997,90 @@ class Database:
             INSERT INTO scheduler_settings (key, enabled, schedule_time, updated_at)
             VALUES ('daily_summary', FALSE, '12:00', NOW())
             ON CONFLICT (key) DO NOTHING
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS topic_generation_prompts (
+                id BIGSERIAL PRIMARY KEY,
+                prompt_code TEXT NOT NULL UNIQUE,
+                prompt_name TEXT NOT NULL,
+                prompt_text TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS daily_topic_runs (
+                id BIGSERIAL PRIMARY KEY,
+                topic_date DATE NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                scheduled_time TEXT,
+                prompt_code TEXT REFERENCES topic_generation_prompts(prompt_code),
+                topic_title TEXT,
+                topic_body TEXT,
+                topic_url TEXT,
+                error_message TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            INSERT INTO scheduler_settings (key, enabled, schedule_time, updated_at)
+            VALUES ('daily_topic', FALSE, '18:00', NOW())
+            ON CONFLICT (key) DO NOTHING
+            """,
+            """
+            INSERT INTO topic_generation_prompts (
+                prompt_code,
+                prompt_name,
+                prompt_text,
+                is_active,
+                created_at,
+                updated_at
+            )
+            VALUES (
+                'daily_relationship_topic',
+                'Daily relationship forum topic',
+                'тема для форума (в стиле dota2.ru), связанную с девушками / отношениями / одиночеством.
+
+Требования:
+
+Заголовок:
+максимально короткий (2–6 слов)
+простой, разговорный, без сложных формулировок
+можно использовать слова: «девушка», «тян», «тянка»
+допускается грубость или провокация
+стиль должен выглядеть как реальный пользовательский заголовок
+
+Форматы заголовка (выбери один):
+
+вопрос (например: «почему тян игнорят»)
+короткая проблема («девушка не отвечает»)
+эмоциональный заголовок («тян сломала жизнь»)
+обсуждение («идеальная девушка»)
+Первый пост:
+3–8 предложений
+пишется от первого лица
+стиль: разговорный, немного небрежный
+допускаются ошибки или упрощённая речь
+содержание:
+либо личная ситуация
+либо вопрос к форуму
+либо жалоба / рассуждение
+Добавь элементы:
+неуверенность / обида / злость / растерянность
+обращение к аудитории («пацаны», «ребят»)
+открытый вопрос в конце
+Не делай текст слишком умным или литературным — он должен выглядеть как пост обычного юзера форума.',
+                TRUE,
+                NOW(),
+                NOW()
+            )
+            ON CONFLICT (prompt_code) DO UPDATE
+            SET prompt_name = EXCLUDED.prompt_name,
+                prompt_text = EXCLUDED.prompt_text,
+                is_active = EXCLUDED.is_active,
+                updated_at = NOW()
             """,
         ]
         with self._connect() as conn:

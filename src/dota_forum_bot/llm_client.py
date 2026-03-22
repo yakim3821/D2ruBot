@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from .exceptions import ForumBotError
 
@@ -127,3 +128,54 @@ class LLMClient:
         if not output_text:
             raise ForumBotError("DeepSeek returned an empty daily summary.")
         return output_text
+
+    def generate_daily_forum_topic(
+        self,
+        prompt_text: str,
+        recent_titles: list[str] | None = None,
+    ) -> tuple[str, str]:
+        recent_titles = recent_titles or []
+        system_prompt = (
+            "Ты генерируешь новую тему для форума dota2.ru в разделе Таверна. "
+            "Нужно вернуть только итоговый результат в строгом формате без пояснений. "
+            "Сначала строка 'TITLE: <заголовок>', потом строка 'POST:', потом текст первого поста. "
+            "Заголовок и пост должны выглядеть как реальные, живые и разговорные. "
+            "Не упоминай ИИ, ботов или промты. "
+            "Не копируй дословно недавние заголовки из списка."
+        )
+
+        user_prompt = (
+            f"Промт для генерации:\n{prompt_text}\n\n"
+            f"Недавние заголовки, которых нужно избегать:\n{json.dumps(recent_titles, ensure_ascii=False)}\n\n"
+            "Верни результат только в таком виде:\n"
+            "TITLE: короткий заголовок\n"
+            "POST:\n"
+            "текст первого поста"
+        )
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=600,
+            temperature=0.95,
+        )
+
+        output_text = ""
+        if response.choices:
+            message = response.choices[0].message
+            output_text = (message.content or "").strip()
+        if not output_text:
+            raise ForumBotError("DeepSeek returned an empty daily topic.")
+
+        match = re.search(r"TITLE:\s*(.+?)\nPOST:\s*(.+)", output_text, flags=re.DOTALL | re.IGNORECASE)
+        if not match:
+            raise ForumBotError(f"Daily topic response has invalid format: {output_text[:200]}")
+
+        title = match.group(1).strip()
+        post = match.group(2).strip()
+        if not title or not post:
+            raise ForumBotError("Daily topic response is missing title or post body.")
+        return title, post

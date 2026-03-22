@@ -29,9 +29,11 @@ DISPLAY_COMMANDS: list[tuple[str, list[str]]] = [
     ("LLM Draft New Topics", ["llm-draft-new-topics", "--limit", "1"]),
     ("Publish LLM Drafted Topics", ["publish-llm-drafted-topics", "--limit", "1"]),
     ("Publish Daily Summary", ["publish-daily-summary"]),
+    ("Publish Daily Topic", ["publish-daily-topic"]),
 ]
 WORKER_COMMAND = ["run-auto-reply-worker"]
 DAILY_SUMMARY_WORKER_COMMAND = ["run-daily-summary-worker"]
+DAILY_TOPIC_WORKER_COMMAND = ["run-daily-topic-worker"]
 
 
 def _utc_now_iso() -> str:
@@ -70,6 +72,11 @@ class UIProcessManager:
             name="daily_summary_worker",
             command=DAILY_SUMMARY_WORKER_COMMAND,
             log_path=LOGS_DIR / "publish-daily-summary.log",
+        )
+        self._daily_topic_worker = ManagedProcess(
+            name="daily_topic_worker",
+            command=DAILY_TOPIC_WORKER_COMMAND,
+            log_path=LOGS_DIR / "publish-daily-topic.log",
         )
 
     def _spawn(self, command: list[str], log_path: Path) -> subprocess.Popen:
@@ -158,6 +165,39 @@ class UIProcessManager:
                 "started_at": self._daily_summary_worker.started_at,
                 "log": self._daily_summary_worker.log_path.name,
                 "exit_code": self._daily_summary_worker.exit_code(),
+            }
+
+    def start_daily_topic_worker(self) -> dict[str, Any]:
+        with self._lock:
+            if self._daily_topic_worker.is_running:
+                return {"status": "already_running", "pid": self._daily_topic_worker.pid}
+            self._daily_topic_worker.process = self._spawn(
+                self._daily_topic_worker.command,
+                self._daily_topic_worker.log_path,
+            )
+            self._daily_topic_worker.started_at = _utc_now_iso()
+            return {"status": "started", "pid": self._daily_topic_worker.pid}
+
+    def stop_daily_topic_worker(self) -> dict[str, Any]:
+        with self._lock:
+            if not self._daily_topic_worker.is_running or self._daily_topic_worker.process is None:
+                return {"status": "not_running"}
+            self._daily_topic_worker.process.terminate()
+            try:
+                self._daily_topic_worker.process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._daily_topic_worker.process.kill()
+                self._daily_topic_worker.process.wait(timeout=5)
+            return {"status": "stopped", "exit_code": self._daily_topic_worker.exit_code()}
+
+    def daily_topic_worker_status(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "running": self._daily_topic_worker.is_running,
+                "pid": self._daily_topic_worker.pid,
+                "started_at": self._daily_topic_worker.started_at,
+                "log": self._daily_topic_worker.log_path.name,
+                "exit_code": self._daily_topic_worker.exit_code(),
             }
 
 
@@ -478,6 +518,23 @@ HTML_PAGE = """<!doctype html>
 
       <section class="card">
         <div class="card-head">
+          <h2>Daily Topic</h2>
+        </div>
+        <div class="card-body stack">
+          <div id="daily-topic-pill" class="status-pill off">Daily topic worker stopped</div>
+          <label><input id="daily-topic-enabled" type="checkbox"> Автопубликация включена</label>
+          <div class="toolbar">
+            <input id="daily-topic-time" type="time" value="18:00">
+            <button class="secondary" onclick="saveDailyTopicSchedule()">Save Schedule</button>
+            <button onclick="runDailyTopicNow()">Run Now</button>
+          </div>
+          <div class="hint" id="daily-topic-meta">Worker PID: -, Started: -</div>
+          <div class="hint" id="daily-topic-last">Последний запуск: -</div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
           <h2>Logs</h2>
           <div class="toolbar">
             <select id="log-select" onchange="refreshLogs()"></select>
@@ -519,7 +576,7 @@ HTML_PAGE = """<!doctype html>
 
   <script>
     const COMMANDS = __COMMANDS__;
-    const logs = ["worker.log", "publish-daily-summary.log", ...COMMANDS.map(x => x.log)];
+    const logs = ["worker.log", "publish-daily-summary.log", "publish-daily-topic.log", ...COMMANDS.map(x => x.log)];
 
     function renderCommands() {
       const box = document.getElementById("commands");
@@ -582,6 +639,19 @@ HTML_PAGE = """<!doctype html>
       const lastRun = data.daily_summary.latest_run;
       document.getElementById("daily-summary-last").textContent = lastRun
         ? `Последний запуск: ${lastRun.summary_date} | ${lastRun.status} | ${lastRun.topic_url ?? "-"}`
+        : "Последний запуск: -";
+      const topicPill = document.getElementById("daily-topic-pill");
+      topicPill.className = data.daily_topic.worker.running ? "status-pill" : "status-pill off";
+      topicPill.textContent = data.daily_topic.worker.running
+        ? "Daily topic worker running"
+        : "Daily topic worker stopped";
+      document.getElementById("daily-topic-enabled").checked = !!data.daily_topic.schedule.enabled;
+      document.getElementById("daily-topic-time").value = data.daily_topic.schedule.schedule_time ?? "18:00";
+      document.getElementById("daily-topic-meta").textContent =
+        `Worker PID: ${data.daily_topic.worker.pid ?? "-"}, Started: ${data.daily_topic.worker.started_at ?? "-"}`;
+      const lastTopicRun = data.daily_topic.latest_run;
+      document.getElementById("daily-topic-last").textContent = lastTopicRun
+        ? `Последний запуск: ${lastTopicRun.topic_date} | ${lastTopicRun.status} | ${lastTopicRun.topic_url ?? "-"}`
         : "Последний запуск: -";
     }
 
@@ -668,6 +738,23 @@ HTML_PAGE = """<!doctype html>
       await refreshAll();
     }
 
+    async function saveDailyTopicSchedule() {
+      const enabled = document.getElementById("daily-topic-enabled").checked;
+      const scheduleTime = document.getElementById("daily-topic-time").value || "18:00";
+      await fetchJson("/api/daily-topic/config", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({enabled, schedule_time: scheduleTime})
+      });
+      await refreshAll();
+    }
+
+    async function runDailyTopicNow() {
+      await fetchJson("/api/daily-topic/run", {method: "POST"});
+      document.getElementById("log-select").value = "publish-daily-topic.log";
+      await refreshAll();
+    }
+
     async function refreshAll() {
       await refreshStatus();
       await refreshLogs();
@@ -693,6 +780,9 @@ class BotUI:
         schedule = self.db.get_daily_summary_schedule()
         if schedule.get("enabled"):
             self.manager.start_daily_summary_worker()
+        topic_schedule = self.db.get_daily_topic_schedule()
+        if topic_schedule.get("enabled"):
+            self.manager.start_daily_topic_worker()
 
     def command_specs(self) -> list[dict[str, Any]]:
         specs = []
@@ -715,6 +805,11 @@ class BotUI:
                 "schedule": self.db.get_daily_summary_schedule(),
                 "latest_run": (self.db.get_recent_daily_summary_runs(limit=1) or [None])[0],
             },
+            "daily_topic": {
+                "worker": self.manager.daily_topic_worker_status(),
+                "schedule": self.db.get_daily_topic_schedule(),
+                "latest_run": (self.db.get_recent_daily_topic_runs(limit=1) or [None])[0],
+            },
         }
 
     def monitoring(self) -> dict[str, Any]:
@@ -724,6 +819,7 @@ class BotUI:
             "recent_replies": self.db.get_recent_bot_replies(limit=50),
             "recent_failures": self.db.get_recent_failures(limit=50),
             "recent_daily_summaries": self.db.get_recent_daily_summary_runs(limit=20),
+            "recent_daily_topics": self.db.get_recent_daily_topic_runs(limit=20),
         }
 
     def run_command(self, command: list[str]) -> dict[str, Any]:
@@ -754,6 +850,26 @@ class BotUI:
                 "message": "Daily summary worker is already running. Stop it before starting a manual run.",
             }
         return self.manager.run_one_off(["publish-daily-summary"])
+
+    def update_daily_topic_schedule(self, enabled: bool, schedule_time: str) -> dict[str, Any]:
+        self.db.set_daily_topic_schedule(enabled=enabled, schedule_time=schedule_time)
+        if enabled:
+            worker = self.manager.start_daily_topic_worker()
+        else:
+            worker = self.manager.stop_daily_topic_worker()
+        return {
+            "schedule": self.db.get_daily_topic_schedule(),
+            "worker": self.manager.daily_topic_worker_status(),
+            "action": worker,
+        }
+
+    def run_daily_topic_now(self) -> dict[str, Any]:
+        if self.manager.daily_topic_worker_status().get("running"):
+            return {
+                "status": "worker_running",
+                "message": "Daily topic worker is already running. Stop it before starting a manual run.",
+            }
+        return self.manager.run_one_off(["publish-daily-topic"])
 
     def read_log(self, name: str) -> dict[str, Any]:
         safe_name = Path(name).name
@@ -797,6 +913,14 @@ class UIRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/daily-summary/run":
             self._send_json(self.ui.run_daily_summary_now())
+            return
+        if parsed.path == "/api/daily-topic/config":
+            enabled = bool(body.get("enabled"))
+            schedule_time = str(body.get("schedule_time") or "18:00")
+            self._send_json(self.ui.update_daily_topic_schedule(enabled=enabled, schedule_time=schedule_time))
+            return
+        if parsed.path == "/api/daily-topic/run":
+            self._send_json(self.ui.run_daily_topic_now())
             return
         if parsed.path == "/api/command":
             command = body.get("command")

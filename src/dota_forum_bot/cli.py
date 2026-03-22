@@ -111,6 +111,44 @@ def build_parser() -> argparse.ArgumentParser:
         help="Mark today's daily summary as already handled, so the worker skips today and waits for tomorrow.",
     )
 
+    daily_topic_parser = subparsers.add_parser(
+        "publish-daily-topic",
+        help="Generate and publish one daily engagement topic in Taverna from the prompt stored in PostgreSQL.",
+    )
+    daily_topic_parser.add_argument("--force", action="store_true", help="Publish even if today's daily topic run already exists.")
+
+    daily_topic_worker_parser = subparsers.add_parser(
+        "run-daily-topic-worker",
+        help="Run a background worker that publishes one generated topic per day at the configured UI time.",
+    )
+    daily_topic_worker_parser.add_argument("--interval", type=int, default=30, help="Seconds between schedule checks.")
+
+    daily_topic_schedule_parser = subparsers.add_parser(
+        "set-daily-topic-schedule",
+        help="Enable/disable daily topic schedule and set its publish time without using the UI.",
+    )
+    daily_topic_schedule_parser.add_argument(
+        "--time",
+        dest="schedule_time",
+        help="Publish time in HH:MM format, for example 19:35.",
+    )
+    daily_topic_schedule_group = daily_topic_schedule_parser.add_mutually_exclusive_group()
+    daily_topic_schedule_group.add_argument(
+        "--enabled",
+        action="store_true",
+        help="Enable the daily topic schedule.",
+    )
+    daily_topic_schedule_group.add_argument(
+        "--disabled",
+        action="store_true",
+        help="Disable the daily topic schedule.",
+    )
+
+    subparsers.add_parser(
+        "skip-daily-topic-today",
+        help="Mark today's generated topic as already handled, so the worker skips today and waits for tomorrow.",
+    )
+
     ui_parser = subparsers.add_parser(
         "run-ui",
         help="Run optional local web UI for command запуск, logs, and worker status.",
@@ -305,6 +343,60 @@ def main() -> int:
                 error_message="Skipped manually by operator.",
             )
             print(f"Daily summary marked as skipped for {summary_date.isoformat()}.")
+        elif args.command == "publish-daily-topic":
+            llm = LLMClient(
+                api_key=settings.deepseek_api_key,
+                model=settings.deepseek_model,
+                base_url=settings.deepseek_base_url,
+            )
+            result = service.publish_daily_forum_topic(
+                llm=llm,
+                force=args.force,
+            )
+            print(
+                f"Daily topic finished: status={result.status}, "
+                f"title={result.topic_title or '-'}, url={result.topic_url or '-'}"
+            )
+            for detail in result.details:
+                print(detail)
+        elif args.command == "run-daily-topic-worker":
+            llm = LLMClient(
+                api_key=settings.deepseek_api_key,
+                model=settings.deepseek_model,
+                base_url=settings.deepseek_base_url,
+            )
+            print(f"Daily topic worker started: interval={args.interval}s")
+            service.run_daily_topic_worker(
+                llm=llm,
+                poll_interval_seconds=args.interval,
+            )
+        elif args.command == "set-daily-topic-schedule":
+            current = db.get_daily_topic_schedule()
+            schedule_time = args.schedule_time or current.get("schedule_time") or "18:00"
+            if args.enabled:
+                enabled = True
+            elif args.disabled:
+                enabled = False
+            else:
+                enabled = bool(current.get("enabled"))
+            db.set_daily_topic_schedule(enabled=enabled, schedule_time=schedule_time)
+            updated = db.get_daily_topic_schedule()
+            print(
+                f"Daily topic schedule updated: enabled={updated['enabled']}, "
+                f"time={updated['schedule_time']}"
+            )
+        elif args.command == "skip-daily-topic-today":
+            today = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE)
+            topic_date = today.date()
+            schedule = db.get_daily_topic_schedule()
+            db.upsert_daily_topic_run(
+                topic_date=topic_date,
+                status="skipped",
+                scheduled_time=schedule.get("schedule_time"),
+                prompt_code=service.DAILY_TOPIC_PROMPT_CODE,
+                error_message="Skipped manually by operator.",
+            )
+            print(f"Daily topic marked as skipped for {topic_date.isoformat()}.")
 
         return 0
     except ForumBotError as exc:

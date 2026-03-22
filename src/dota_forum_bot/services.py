@@ -101,9 +101,21 @@ class DailySummaryResult:
     details: list[str] = field(default_factory=list)
 
 
+@dataclass
+class DailyTopicResult:
+    topic_date: date
+    status: str
+    topic_title: str | None = None
+    topic_url: str | None = None
+    details: list[str] = field(default_factory=list)
+
+
 class ForumSyncService:
     DAILY_SUMMARY_RETRY_DELAY_SECONDS = 600
     DAILY_SUMMARY_IN_PROGRESS_TIMEOUT_SECONDS = 300
+    DAILY_TOPIC_PROMPT_CODE = "daily_relationship_topic"
+    DAILY_TOPIC_RETRY_DELAY_SECONDS = 600
+    DAILY_TOPIC_IN_PROGRESS_TIMEOUT_SECONDS = 300
 
     def __init__(self, client: Dota2ForumClient, db: Database) -> None:
         self.client = client
@@ -194,6 +206,21 @@ class ForumSyncService:
             flags=re.DOTALL,
         )
         return text.strip()
+
+    @staticmethod
+    def _normalize_generated_topic_title(title: str) -> str:
+        text = " ".join((title or "").replace("\n", " ").split()).strip(" -:.")
+        if not text:
+            raise ValueError("Generated topic title is empty.")
+        return text[:120].strip()
+
+    @staticmethod
+    def _normalize_generated_topic_body(body: str) -> str:
+        text = (body or "").replace("\r\n", "\n").strip()
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        if not text:
+            raise ValueError("Generated topic body is empty.")
+        return text
 
     @staticmethod
     def _summarize_reactions(post) -> list[str]:
@@ -1085,4 +1112,243 @@ class ForumSyncService:
                 raise
             except Exception as exc:
                 log(f"Daily summary cycle #{cycle} failed: {exc}")
+                time.sleep(poll_interval_seconds)
+
+    def publish_daily_forum_topic(
+        self,
+        llm: LLMClient,
+        force: bool = False,
+        log=None,
+    ) -> DailyTopicResult:
+        now_local = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE)
+        topic_date = now_local.date()
+        schedule = self.db.get_daily_topic_schedule()
+        existing = self.db.get_daily_topic_run(topic_date)
+        prompt = self.db.get_active_topic_prompt(self.DAILY_TOPIC_PROMPT_CODE)
+        if prompt is None:
+            raise ValueError(f"Active prompt {self.DAILY_TOPIC_PROMPT_CODE!r} was not found in database.")
+
+        start_message = f"Daily topic started: date={topic_date.isoformat()}, force={force}"
+        self._emit(log, start_message)
+
+        if existing and existing["status"] == "in_progress" and not force:
+            message = f"Daily topic for {topic_date.isoformat()} is already in progress."
+            self._emit(log, message)
+            return DailyTopicResult(
+                topic_date=topic_date,
+                status="already_running",
+                topic_title=existing.get("topic_title"),
+                topic_url=existing.get("topic_url"),
+                details=[message],
+            )
+
+        if existing and existing["status"] == "published" and not force:
+            message = f"Daily topic for {topic_date.isoformat()} already published: {existing.get('topic_url')}"
+            self._emit(log, message)
+            return DailyTopicResult(
+                topic_date=topic_date,
+                status="already_published",
+                topic_title=existing.get("topic_title"),
+                topic_url=existing.get("topic_url"),
+                details=[message],
+            )
+
+        recent_titles = self.db.get_recent_topic_titles(hours=24 * 14, forum_section_id=6, limit=100)
+        existing_titles = {title.strip().lower() for title in recent_titles if title and title.strip()}
+        self.db.upsert_daily_topic_run(
+            topic_date=topic_date,
+            status="in_progress",
+            scheduled_time=schedule.get("schedule_time"),
+            prompt_code=prompt["prompt_code"],
+        )
+
+        details = [f"Recent titles loaded for uniqueness check: {len(existing_titles)}"]
+        for message in details:
+            self._emit(log, message)
+
+        try:
+            generated_title = ""
+            generated_body = ""
+            for attempt in range(1, 4):
+                self._emit(log, f"Generating daily topic attempt #{attempt}.")
+                title, body = llm.generate_daily_forum_topic(
+                    prompt_text=prompt["prompt_text"],
+                    recent_titles=recent_titles,
+                )
+                title = self._normalize_generated_topic_title(title)
+                body = self._normalize_generated_topic_body(body)
+                generated_title = title
+                generated_body = body
+                normalized_title = title.lower()
+                if normalized_title in existing_titles:
+                    duplicate_message = f"Attempt #{attempt} returned duplicate title: {title}"
+                    self._emit(log, duplicate_message)
+                    details.append(duplicate_message)
+                    recent_titles.append(title)
+                    existing_titles.add(normalized_title)
+                    continue
+                break
+            else:
+                raise ValueError("Could not generate a unique daily topic title after 3 attempts.")
+
+            created = self.client.create_topic(
+                forum_id=6,
+                title=generated_title,
+                content=generated_body,
+                subscribe=True,
+                prefix=-1,
+                pinned=False,
+                referer_url="https://dota2.ru/forum/forums/taverna.6/create-thread/",
+            )
+            topic_url = created.get("redirect")
+            self.db.upsert_daily_topic_run(
+                topic_date=topic_date,
+                status="published",
+                scheduled_time=schedule.get("schedule_time"),
+                prompt_code=prompt["prompt_code"],
+                topic_title=generated_title,
+                topic_body=generated_body,
+                topic_url=topic_url,
+            )
+            success = f"Published daily topic: title={generated_title!r}, url={topic_url}"
+            self._emit(log, success)
+            details.append(success)
+            return DailyTopicResult(
+                topic_date=topic_date,
+                status="published",
+                topic_title=generated_title,
+                topic_url=topic_url,
+                details=details,
+            )
+        except Exception as exc:
+            error_message = f"Daily topic failed: {exc}"
+            self._emit(log, error_message)
+            self.db.upsert_daily_topic_run(
+                topic_date=topic_date,
+                status="failed",
+                scheduled_time=schedule.get("schedule_time"),
+                prompt_code=prompt["prompt_code"],
+                topic_title=generated_title or (existing.get("topic_title") if existing else None),
+                topic_body=generated_body or (existing.get("topic_body") if existing else None),
+                topic_url=existing.get("topic_url") if existing else None,
+                error_message=str(exc),
+            )
+            details.append(error_message)
+            return DailyTopicResult(
+                topic_date=topic_date,
+                status="failed",
+                topic_title=generated_title or (existing.get("topic_title") if existing else None),
+                topic_url=existing.get("topic_url") if existing else None,
+                details=details,
+            )
+
+    def run_daily_topic_worker(
+        self,
+        llm: LLMClient,
+        poll_interval_seconds: int = 30,
+    ) -> None:
+        cycle = 0
+
+        def log(message: str) -> None:
+            timestamp = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S %Z")
+            print(f"[{timestamp}] {message}")
+
+        while True:
+            cycle += 1
+            try:
+                schedule = self.db.get_daily_topic_schedule()
+                if not schedule.get("enabled"):
+                    log(f"Daily topic cycle #{cycle}: disabled, sleeping {poll_interval_seconds}s.")
+                    time.sleep(poll_interval_seconds)
+                    continue
+
+                now_local = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE)
+                schedule_time = self._parse_schedule_time(schedule.get("schedule_time"))
+                scheduled_at = datetime.combine(now_local.date(), schedule_time, tzinfo=DISPLAY_TIMEZONE)
+                existing = self.db.get_daily_topic_run(now_local.date())
+
+                if existing:
+                    if existing["status"] in {"published", "skipped"}:
+                        log(
+                            f"Daily topic cycle #{cycle}: today's run already exists "
+                            f"with status={existing['status']}, sleeping {poll_interval_seconds}s."
+                        )
+                        time.sleep(poll_interval_seconds)
+                        continue
+                    if existing["status"] == "in_progress":
+                        updated_at = existing.get("updated_at")
+                        if updated_at is not None:
+                            stale_after = updated_at + timedelta(
+                                seconds=self.DAILY_TOPIC_IN_PROGRESS_TIMEOUT_SECONDS
+                            )
+                            if now_local >= stale_after:
+                                log(
+                                    f"Daily topic cycle #{cycle}: in_progress run became stale, "
+                                    f"marking as failed and retrying."
+                                )
+                                self.db.upsert_daily_topic_run(
+                                    topic_date=now_local.date(),
+                                    status="failed",
+                                    scheduled_time=schedule.get("schedule_time"),
+                                    prompt_code=existing.get("prompt_code"),
+                                    topic_title=existing.get("topic_title"),
+                                    topic_body=existing.get("topic_body"),
+                                    topic_url=existing.get("topic_url"),
+                                    error_message="Daily topic run timed out while in progress.",
+                                )
+                            else:
+                                wait_seconds = max(0, int((stale_after - now_local).total_seconds()))
+                                log(
+                                    f"Daily topic cycle #{cycle}: today's run is still in progress, "
+                                    f"stale in {wait_seconds}s."
+                                )
+                                time.sleep(min(poll_interval_seconds, max(1, wait_seconds)))
+                                continue
+                        else:
+                            log(
+                                f"Daily topic cycle #{cycle}: today's run is still in progress, "
+                                f"sleeping {poll_interval_seconds}s."
+                            )
+                            time.sleep(poll_interval_seconds)
+                            continue
+                    if existing["status"] == "failed":
+                        updated_at = existing.get("updated_at")
+                        if updated_at is not None:
+                            retry_at = updated_at + timedelta(seconds=self.DAILY_TOPIC_RETRY_DELAY_SECONDS)
+                            if now_local < retry_at:
+                                wait_seconds = max(0, int((retry_at - now_local).total_seconds()))
+                                log(
+                                    f"Daily topic cycle #{cycle}: previous run failed, "
+                                    f"retry after {wait_seconds}s."
+                                )
+                                time.sleep(min(poll_interval_seconds, max(1, wait_seconds)))
+                                continue
+
+                if now_local < scheduled_at:
+                    log(
+                        f"Daily topic cycle #{cycle}: waiting for schedule "
+                        f"{schedule_time.strftime('%H:%M')}, sleeping {poll_interval_seconds}s."
+                    )
+                    time.sleep(poll_interval_seconds)
+                    continue
+
+                log(
+                    f"Daily topic cycle #{cycle}: schedule reached "
+                    f"({schedule_time.strftime('%H:%M')}), publishing topic."
+                )
+                result = self.publish_daily_forum_topic(
+                    llm=llm,
+                    force=False,
+                    log=log,
+                )
+                log(
+                    f"Daily topic cycle #{cycle} finished: "
+                    f"status={result.status}, title={result.topic_title}, url={result.topic_url}"
+                )
+                time.sleep(poll_interval_seconds)
+            except KeyboardInterrupt:
+                log("Daily topic worker stopped by user.")
+                raise
+            except Exception as exc:
+                log(f"Daily topic cycle #{cycle} failed: {exc}")
                 time.sleep(poll_interval_seconds)
