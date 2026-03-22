@@ -438,6 +438,88 @@ def extract_post_message_text(raw_html: str) -> str:
     return _normalize_space(_html_to_text(without_quotes))
 
 
+def parse_quote_notifications_api(notices: list[dict]) -> list[QuoteNotificationRecord]:
+    records: list[QuoteNotificationRecord] = []
+    seen_post_ids: set[int] = set()
+
+    for item in notices:
+        description_html = str(item.get("description") or "")
+        description_text = _normalize_space(_html_to_text(description_html))
+        normalized_text = description_text.lower().replace("ё", "е")
+        if "процитировал ваше сообщение" not in normalized_text:
+            continue
+
+        post_match = re.search(
+            r'href="((?:https://dota2\.ru)?/forum/posts/(\d+)/)"',
+            description_html,
+            flags=re.IGNORECASE,
+        )
+        if post_match is None:
+            continue
+
+        forum_post_id = int(post_match.group(2))
+        if forum_post_id in seen_post_ids:
+            continue
+
+        source_username = None
+        source_user_id = None
+        sender = item.get("sender")
+        if isinstance(sender, dict):
+            source_username = str(sender.get("username") or "").strip() or None
+            raw_sender_id = sender.get("user_id") or sender.get("id")
+            try:
+                source_user_id = int(raw_sender_id) if raw_sender_id is not None else None
+            except (TypeError, ValueError):
+                source_user_id = None
+
+        if source_username is None:
+            source_username = str(item.get("sender.username") or "").strip() or None
+
+        if source_user_id is None:
+            profile_candidates = [
+                str(item.get("link") or ""),
+                description_html,
+            ]
+            for candidate in profile_candidates:
+                profile_match = re.search(
+                    r'(?:https://dota2\.ru)?/forum/members/[^"\']+?\.(\d+)/?',
+                    candidate,
+                    flags=re.IGNORECASE,
+                )
+                if profile_match:
+                    source_user_id = int(profile_match.group(1))
+                    break
+
+        if source_username is None:
+            source_user = _extract_user_from_context(description_html)
+            if source_user is not None:
+                source_username = source_user.username
+                source_user_id = source_user_id or source_user.forum_user_id
+
+        topic_title = None
+        topic_match = re.search(
+            r'href="[^"]*(?:threads/[^"]+?\.\d+|posts/\d+/)[^"]*"[^>]*>(.*?)</a>\s*$',
+            description_html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if topic_match:
+            topic_title = _extract_anchor_text(topic_match.group(1))
+
+        records.append(
+            QuoteNotificationRecord(
+                forum_post_id=forum_post_id,
+                post_url=_to_absolute_url(post_match.group(1)),
+                source_username=source_username,
+                source_user_id=source_user_id,
+                topic_title=topic_title,
+                notification_text=description_text,
+            )
+        )
+        seen_post_ids.add(forum_post_id)
+
+    return records
+
+
 def _extract_anchor_text(anchor_html: str) -> str:
     anchor_html = re.sub(r"<script.*?</script>", "", anchor_html, flags=re.IGNORECASE | re.DOTALL)
     anchor_html = re.sub(r"<style.*?</style>", "", anchor_html, flags=re.IGNORECASE | re.DOTALL)

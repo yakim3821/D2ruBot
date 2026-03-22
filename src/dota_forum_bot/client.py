@@ -374,6 +374,32 @@ class Dota2ForumClient:
             return data
         raise MessageSendError(f"Forum rejected topic creation: {data}")
 
+    def load_notifications(self) -> dict:
+        response = self._request(
+            urljoin(self.base_url, "/forum/api/notices/load"),
+            method="POST",
+            json_data={},
+            headers={
+                "Origin": self.base_url,
+                "Referer": urljoin(self.base_url, "/forum/notifications/"),
+                "X-Requested-With": "XMLHttpRequest",
+            },
+        )
+        return self._parse_json_response(response, "Notifications load")
+
+    def preload_notifications(self, name: str, page: int = 1) -> dict:
+        response = self._request(
+            urljoin(self.base_url, "/forum/api/notices/preload"),
+            method="POST",
+            json_data={"name": name, "page": page},
+            headers={
+                "Origin": self.base_url,
+                "Referer": urljoin(self.base_url, "/forum/notifications/"),
+                "X-Requested-With": "XMLHttpRequest",
+            },
+        )
+        return self._parse_json_response(response, "Notifications preload")
+
     def _extract_reply_form(self, html: str, page_url: str):
         parser = ReplyFormParser()
         parser.feed(html)
@@ -474,3 +500,17 @@ class Dota2ForumClient:
         from urllib.parse import quote_plus
 
         return quote_plus(str(value))
+
+    @staticmethod
+    def _parse_json_response(response: HttpResponse, label: str) -> dict:
+        try:
+            data = json.loads(response.text)
+        except json.JSONDecodeError as exc:
+            raise ForumBotError(
+                f"{label} returned non-JSON response. HTTP {response.status}: {response.text[:300]}"
+            ) from exc
+
+        status = data.get("status")
+        if status == "success":
+            return data
+        raise ForumBotError(f"{label} failed with status={status!r}: {data}")

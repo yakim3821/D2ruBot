@@ -17,6 +17,7 @@ from .parsers import (
     TopicRecord,
     extract_post_message_text,
     extract_quoted_text,
+    parse_quote_notifications_api,
     parse_quote_notifications,
     parse_profile_posts_page,
     parse_profile_posts_total_pages,
@@ -349,8 +350,18 @@ class ForumSyncService:
         limit: int = 20,
         log=None,
     ) -> QuoteReplyResult:
-        response = self.client.fetch_page(NOTIFICATIONS_URL)
-        notifications = parse_quote_notifications(response.text)
+        load_payload = self.client.load_notifications()
+        categories = load_payload.get("categories") or {}
+        quote_category_name = next(
+            (
+                name
+                for name in categories.keys()
+                if isinstance(name, str) and name.lower().replace("ё", "е") == "цитаты"
+            ),
+            "Цитаты",
+        )
+        preload_payload = self.client.preload_notifications(name=quote_category_name, page=1)
+        notifications = parse_quote_notifications_api(preload_payload.get("notices") or [])
         style_profile: dict | None = None
 
         scanned = len(notifications)
@@ -361,7 +372,7 @@ class ForumSyncService:
         failed = 0
         details: list[str] = []
 
-        summary = f"Quote notifications fetched: total={scanned}"
+        summary = f"Quote notifications fetched: total={scanned}, category={quote_category_name}"
         details.append(summary)
         self._emit(log, summary)
 
