@@ -372,7 +372,21 @@ class ForumSyncService:
                 f"Failed to load {context}. HTTP {response.status} for {url}. "
                 f"Response preview: {preview}"
             )
+        requested_topic_id = self._extract_thread_id_from_url(url)
+        if requested_topic_id is not None:
+            final_topic_id = self._extract_thread_id_from_url(response.url)
+            if final_topic_id != requested_topic_id:
+                raise ForumBotError(
+                    f"Failed to load {context}. Thread URL {url} redirected to unexpected page {response.url}."
+                )
         return response
+
+    @staticmethod
+    def _extract_thread_id_from_url(url: str) -> int | None:
+        match = re.search(r"/forum/threads/[^/]+\.(\d+)(?:/|$|[?#])", url or "")
+        if not match:
+            return None
+        return int(match.group(1))
 
     @staticmethod
     def _thread_post_to_post_record(post, is_topic_starter: bool) -> PostRecord:

@@ -235,6 +235,7 @@ class Dota2ForumClient:
             raise MessageSendError(
                 f"Failed to open thread page before replying. HTTP {page.status}: {page.text[:300]}"
             )
+        self._ensure_thread_response(thread_url, page.url)
 
         form, endpoint = self._extract_reply_form(page.text, page.url)
         if form is None or endpoint is None:
@@ -421,6 +422,24 @@ class Dota2ForumClient:
             return form, endpoint
 
         return None, None
+
+    @staticmethod
+    def _extract_thread_id_from_url(url: str) -> int | None:
+        match = re.search(r"/forum/threads/[^/]+\.(\d+)(?:/|$|[?#])", url or "")
+        if not match:
+            return None
+        return int(match.group(1))
+
+    def _ensure_thread_response(self, requested_url: str, final_url: str) -> None:
+        requested_topic_id = self._extract_thread_id_from_url(requested_url)
+        if requested_topic_id is None:
+            return
+
+        final_topic_id = self._extract_thread_id_from_url(final_url)
+        if final_topic_id != requested_topic_id:
+            raise MessageSendError(
+                f"Thread URL {requested_url} redirected to unexpected page {final_url}."
+            )
 
     def _resolve_message_field_name(self, form: ParsedForm) -> str:
         if form.textarea_name:
