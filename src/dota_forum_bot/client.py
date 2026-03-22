@@ -231,6 +231,10 @@ class Dota2ForumClient:
             raise MessageSendError("Message text is empty.")
 
         page = self._request(thread_url)
+        if page.status >= 400:
+            raise MessageSendError(
+                f"Failed to open thread page before replying. HTTP {page.status}: {page.text[:300]}"
+            )
 
         form, endpoint = self._extract_reply_form(page.text, page.url)
         if form is None or endpoint is None:

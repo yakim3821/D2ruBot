@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from .client import Dota2ForumClient
 from .db import Database
 from .drafts import build_topic_draft
-from .exceptions import MessageSendError
+from .exceptions import ForumBotError, MessageSendError
 from .llm_client import LLMClient
 from .parsers import (
     PostRecord,
@@ -344,13 +344,16 @@ class ForumSyncService:
         }
 
     def _fetch_topic_thread_posts(self, topic_url: str) -> tuple[TopicRecord, list]:
-        first_page = self.client.fetch_page(topic_url)
+        first_page = self._fetch_page_or_raise(topic_url, context="topic thread page")
         first_record = parse_topic_thread_page(first_page.url, first_page.text)
         posts = list(first_record.posts)
         seen_post_ids = {post.forum_post_id for post in posts}
 
         for page_number in range(2, first_record.total_pages + 1):
-            response = self.client.fetch_page(self._build_topic_page_url(first_record.topic.topic_url, page_number))
+            response = self._fetch_page_or_raise(
+                self._build_topic_page_url(first_record.topic.topic_url, page_number),
+                context=f"topic thread page {page_number}",
+            )
             page_record = parse_topic_thread_page(response.url, response.text)
             for post in page_record.posts:
                 if post.forum_post_id in seen_post_ids:
@@ -360,6 +363,16 @@ class ForumSyncService:
 
         posts.sort(key=lambda item: ((item.post_number or 0), item.forum_post_id))
         return first_record.topic, posts
+
+    def _fetch_page_or_raise(self, url: str, context: str) -> "HttpResponse":
+        response = self.client.fetch_page(url)
+        if response.status >= 400:
+            preview = re.sub(r"\s+", " ", response.text[:160]).strip()
+            raise ForumBotError(
+                f"Failed to load {context}. HTTP {response.status} for {url}. "
+                f"Response preview: {preview}"
+            )
+        return response
 
     @staticmethod
     def _thread_post_to_post_record(post, is_topic_starter: bool) -> PostRecord:
@@ -595,7 +608,7 @@ class ForumSyncService:
         return (len(reasons) == 0, reasons)
 
     def scan_taverna(self) -> ScanResult:
-        response = self.client.fetch_page(TAVERNA_URL)
+        response = self._fetch_page_or_raise(TAVERNA_URL, context="taverna section page")
         topics = parse_taverna_topics(response.text)
 
         changed = 0
@@ -634,7 +647,7 @@ class ForumSyncService:
         return ScanResult(found=len(topics), inserted_or_updated=changed, new_topics=new_topics)
 
     def sync_topic(self, topic_url: str) -> TopicPageRecord:
-        response = self.client.fetch_page(topic_url)
+        response = self._fetch_page_or_raise(topic_url, context="topic page")
         topic_page = parse_topic_page(response.url, response.text)
         self.db.upsert_topic(topic_page.topic)
         self.db.upsert_post(topic_page.first_post)
