@@ -272,6 +272,105 @@ class ForumSyncService:
         return text.strip()
 
     @staticmethod
+    def _normalize_generated_summary_with_payload(body: str, topics_payload: list[dict[str, object]]) -> str:
+        normalized = ForumSyncService._normalize_generated_summary(body)
+        payload_by_title = {
+            str(item.get("title") or "").strip(): item
+            for item in topics_payload
+            if str(item.get("title") or "").strip()
+        }
+
+        def spoiler_enhance(match):
+            title = match.group(1)
+            content = match.group(2).strip()
+            payload = payload_by_title.get(title, {})
+            topic_url = str(payload.get("url") or "").strip() if isinstance(payload, dict) else ""
+            popular_comments = payload.get("popular_comments") if isinstance(payload, dict) else []
+
+            if topic_url and topic_url not in content:
+                content = f"{topic_url}\n{content}".strip()
+
+            content = ForumSyncService._attach_summary_comment_links(content, popular_comments or [])
+            content = ForumSyncService._split_summary_spoiler_into_paragraphs(content)
+            content = re.sub(r"\n{3,}", "\n\n", content).strip()
+            return f'[SPOILER="{title}"]\n{content}\n[/SPOILER]'
+
+        return re.sub(
+            r'\[SPOILER="([^"]+)"\]\s*(.*?)\s*\[/SPOILER\]',
+            spoiler_enhance,
+            normalized,
+            flags=re.DOTALL,
+        ).strip()
+
+    @staticmethod
+    def _split_summary_spoiler_into_paragraphs(content: str) -> str:
+        lines = [line.strip() for line in content.split("\n") if line.strip()]
+        if not lines:
+            return ""
+
+        comment_marker = "Самые популярные комментарии:"
+        rebuilt: list[str] = []
+        for index, line in enumerate(lines):
+            if index == 0:
+                rebuilt.append(line)
+                continue
+            if line == comment_marker:
+                rebuilt.append("")
+                rebuilt.append(line)
+                continue
+            if rebuilt and rebuilt[-1] == comment_marker:
+                rebuilt.append(line)
+                continue
+            rebuilt.append("")
+            rebuilt.append(line)
+        return "\n".join(rebuilt).strip()
+
+    @staticmethod
+    def _attach_summary_comment_links(content: str, popular_comments: list[dict[str, object]]) -> str:
+        comment_marker = "Самые популярные комментарии:"
+        if not popular_comments or comment_marker not in content:
+            return content
+
+        before, _, after = content.partition(comment_marker)
+        lines = [line.strip() for line in after.splitlines() if line.strip()]
+        if not lines:
+            return content
+
+        author_to_url: dict[str, str] = {}
+        preview_to_url: list[tuple[str, str]] = []
+        for item in popular_comments:
+            author = str(item.get("author") or "").strip()
+            text_preview = str(item.get("text") or "").strip()
+            post_url = str(item.get("post_url") or "").strip()
+            if not post_url:
+                continue
+            if author:
+                author_to_url[author.casefold()] = post_url
+            if text_preview:
+                preview_to_url.append((text_preview.casefold(), post_url))
+
+        linked_lines: list[str] = []
+        for line in lines:
+            if re.search(r"https?://", line):
+                linked_lines.append(line)
+                continue
+
+            link = ""
+            author_match = re.match(r"([^:]{1,120}):", line)
+            if author_match:
+                link = author_to_url.get(author_match.group(1).strip().casefold(), "")
+            if not link:
+                lower_line = line.casefold()
+                for preview, post_url in preview_to_url:
+                    if preview[:40] and preview[:40] in lower_line:
+                        link = post_url
+                        break
+
+            linked_lines.append(f"{line} {link}".strip())
+
+        return f"{before.rstrip()}\n\n{comment_marker}\n" + "\n".join(linked_lines).strip()
+
+    @staticmethod
     def _normalize_generated_topic_title(title: str) -> str:
         text = " ".join((title or "").replace("\n", " ").split()).strip(" -:.")
         if not text:
@@ -337,6 +436,7 @@ class ForumSyncService:
                 "post_number": candidate.post_number,
                 "author": candidate.author.username if candidate.author else None,
                 "text": self._trim_text(candidate.content_text, 280),
+                "post_url": candidate.post_url,
                 "positive_reactions": candidate.positive_reaction_count,
                 "total_reactions": candidate.total_reaction_count,
                 "reactions": self._summarize_reactions(candidate),
@@ -490,11 +590,6 @@ class ForumSyncService:
                 user_message_text = extract_post_message_text(target_post.content_raw) or target_post.content_text
                 starter_post_text = posts[0].content_text if posts else ""
 
-                if style_profile is None and not self._looks_like_bot_accusation(user_message_text):
-                    style_profile = self.db.get_user_style_profile(BOT_USER_ID)
-                    if style_profile is None:
-                        raise ValueError("Bot style profile is not built yet. Run build-yakim-profile first.")
-
                 if self._looks_like_bot_accusation(user_message_text):
                     status = "ignored_bot_accusation"
                     ignored += 1
@@ -512,23 +607,52 @@ class ForumSyncService:
                     details.append(skip_message)
                     self._emit(log, skip_message)
                     continue
-                else:
-                    reply_text = llm.generate_quote_reply(
-                        topic_title=topic_record.title,
-                        starter_post_text=starter_post_text,
-                        quoted_text=quote_text or "(quoted fragment was not extracted)",
-                        user_message_text=user_message_text,
-                        style_profile=style_profile or {},
-                    )
-                    reply_text = self._build_quote_reply_message(
-                        source_username=notification.source_username,
-                        source_user_id=notification.source_user_id,
+                
+                has_explicit_question = llm.has_explicit_question(
+                    topic_title=topic_record.title,
+                    starter_post_text=starter_post_text,
+                    quoted_text=quote_text or "(quoted fragment was not extracted)",
+                    user_message_text=user_message_text,
+                )
+                if not has_explicit_question:
+                    status = "ignored_no_question"
+                    ignored += 1
+                    self.db.update_quote_reply_notification(
                         forum_post_id=notification.forum_post_id,
-                        quoted_message_text=user_message_text,
-                        reply_text=reply_text,
+                        status=status,
+                        forum_topic_id=topic_record.forum_topic_id,
+                        topic_url=topic_record.topic_url,
+                        quote_text=quote_text,
+                        user_message_text=user_message_text,
+                        reply_text="",
+                        error_message=None,
                     )
-                    status = "llm_replied"
-                    replied += 1
+                    skip_message = "  Ignored because the user's message has no explicit question."
+                    details.append(skip_message)
+                    self._emit(log, skip_message)
+                    continue
+
+                if style_profile is None:
+                    style_profile = self.db.get_user_style_profile(BOT_USER_ID)
+                    if style_profile is None:
+                        raise ValueError("Bot style profile is not built yet. Run build-yakim-profile first.")
+
+                reply_text = llm.generate_quote_reply(
+                    topic_title=topic_record.title,
+                    starter_post_text=starter_post_text,
+                    quoted_text=quote_text or "(quoted fragment was not extracted)",
+                    user_message_text=user_message_text,
+                    style_profile=style_profile or {},
+                )
+                reply_text = self._build_quote_reply_message(
+                    source_username=notification.source_username,
+                    source_user_id=notification.source_user_id,
+                    forum_post_id=notification.forum_post_id,
+                    quoted_message_text=user_message_text,
+                    reply_text=reply_text,
+                )
+                status = "llm_replied"
+                replied += 1
 
                 self.client.send_message_to_thread(topic_record.topic_url, reply_text)
                 self.db.add_bot_reply(
@@ -1298,7 +1422,7 @@ class ForumSyncService:
                 summary_date=summary_date.strftime("%d.%m.%Y"),
                 topics_payload=payloads,
             )
-            body = self._normalize_generated_summary(body)
+            body = self._normalize_generated_summary_with_payload(body, payloads)
             created = self.client.create_topic(
                 forum_id=6,
                 title=title,

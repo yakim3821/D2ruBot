@@ -5,6 +5,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from typing import Iterable
 
 
@@ -269,8 +270,8 @@ def parse_topic_thread_page(topic_url: str, topic_html: str) -> TopicThreadPageR
         author=topic_author,
         created_at_forum=posts[0].created_at_forum if posts else None,
         forum_reply_count=max(0, len(posts) - 1),
-        is_closed="closedtopic" in topic_html.lower() or "РґР°РЅРЅР°СЏ С‚РµРјР° Р·Р°РєСЂС‹С‚Р°" in topic_html.lower(),
-        is_pinned="sticky" in topic_html.lower() or "Р·Р°РєСЂРµРї" in topic_html.lower(),
+        is_closed="closedtopic" in topic_html.lower() or "данная тема закрыта" in topic_html.lower(),
+        is_pinned="sticky" in topic_html.lower() or "закреп" in topic_html.lower(),
     )
     return TopicThreadPageRecord(
         topic=topic,
@@ -421,21 +422,15 @@ def _extract_notification_item_blocks(html_text: str) -> list[str]:
 
 def extract_quoted_text(raw_html: str) -> str:
     parts = [
-        _html_to_text(match.group(1))
-        for match in re.finditer(r"<blockquote[^>]*>(.*?)</blockquote>", raw_html, flags=re.IGNORECASE | re.DOTALL)
+        _cleanup_quote_artifacts(_html_to_text(fragment))
+        for fragment in _extract_top_level_blockquote_html(raw_html)
     ]
     cleaned = [_normalize_space(part) for part in parts if _normalize_space(part)]
     return "\n\n".join(cleaned)
 
 
 def extract_post_message_text(raw_html: str) -> str:
-    without_quotes = re.sub(
-        r"<blockquote[^>]*>.*?</blockquote>",
-        " ",
-        raw_html,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    return _normalize_space(_html_to_text(without_quotes))
+    return _normalize_space(_html_to_text(_remove_blockquotes_html(raw_html)))
 
 
 def parse_quote_notifications_api(notices: list[dict]) -> list[QuoteNotificationRecord]:
@@ -658,6 +653,125 @@ def _html_to_text(raw_html: str) -> str:
     text = re.sub(r"</p\s*>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", " ", text)
     return _normalize_space(html.unescape(text.replace("\xa0", " ")))
+
+
+class _QuoteHTMLExtractor(HTMLParser):
+    _QUOTE_META_MARKERS = (
+        "quoteexpand",
+        "quote-expand",
+        "quoteheader",
+        "bbcodeblock-title",
+        "bbcodeblock-expandlink",
+    )
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.blockquote_depth = 0
+        self.skip_meta_depth = 0
+        self.outside_parts: list[str] = []
+        self.quote_parts: list[list[str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        normalized_tag = tag.lower()
+        if normalized_tag == "blockquote":
+            if self.blockquote_depth == 0:
+                self.quote_parts.append([])
+            self.blockquote_depth += 1
+            return
+
+        if self._should_skip_quote_meta(normalized_tag, attrs):
+            self.skip_meta_depth = 1
+            return
+
+        if self.skip_meta_depth > 0:
+            self.skip_meta_depth += 1
+            return
+
+        self._append_markup(self.get_starttag_text(), include_inside_quote=self.blockquote_depth == 1)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        normalized_tag = tag.lower()
+        if normalized_tag == "blockquote":
+            return
+        if self._should_skip_quote_meta(normalized_tag, attrs) or self.skip_meta_depth > 0:
+            return
+        self._append_markup(self.get_starttag_text(), include_inside_quote=self.blockquote_depth == 1)
+
+    def handle_endtag(self, tag: str) -> None:
+        normalized_tag = tag.lower()
+        if normalized_tag == "blockquote":
+            if self.blockquote_depth > 0:
+                self.blockquote_depth -= 1
+            return
+
+        if self.skip_meta_depth > 0:
+            self.skip_meta_depth -= 1
+            return
+
+        self._append_markup(f"</{tag}>", include_inside_quote=self.blockquote_depth == 1)
+
+    def handle_data(self, data: str) -> None:
+        if self.skip_meta_depth > 0:
+            return
+        self._append_markup(data, include_inside_quote=self.blockquote_depth == 1)
+
+    def handle_entityref(self, name: str) -> None:
+        if self.skip_meta_depth > 0:
+            return
+        self._append_markup(f"&{name};", include_inside_quote=self.blockquote_depth == 1)
+
+    def handle_charref(self, name: str) -> None:
+        if self.skip_meta_depth > 0:
+            return
+        self._append_markup(f"&#{name};", include_inside_quote=self.blockquote_depth == 1)
+
+    def _append_markup(self, markup: str, include_inside_quote: bool) -> None:
+        if self.blockquote_depth == 0:
+            self.outside_parts.append(markup)
+        elif include_inside_quote and self.quote_parts:
+            self.quote_parts[-1].append(markup)
+
+    def _should_skip_quote_meta(self, tag: str, attrs: list[tuple[str, str | None]]) -> bool:
+        if self.blockquote_depth != 1:
+            return False
+        if tag == "cite":
+            return True
+
+        attr_values = " ".join((value or "") for _, value in attrs).lower()
+        return any(marker in attr_values for marker in self._QUOTE_META_MARKERS)
+
+
+def _extract_top_level_blockquote_html(raw_html: str) -> list[str]:
+    parser = _QuoteHTMLExtractor()
+    parser.feed(raw_html or "")
+    parser.close()
+    return ["".join(parts).strip() for parts in parser.quote_parts if "".join(parts).strip()]
+
+
+def _remove_blockquotes_html(raw_html: str) -> str:
+    parser = _QuoteHTMLExtractor()
+    parser.feed(raw_html or "")
+    parser.close()
+    return "".join(parser.outside_parts)
+
+
+def _cleanup_quote_artifacts(value: str) -> str:
+    text = value.strip()
+    text = re.sub(
+        r"^.*?Нажмите,\s*чтобы\s*раскрыть\.{0,3}\s*",
+        "",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    lines = [line.strip() for line in text.splitlines()]
+    cleaned_lines = [
+        line
+        for line in lines
+        if line
+        and "нажмите, чтобы раскрыть" not in line.lower()
+        and not re.fullmatch(r".+сказал\(а\):\s*↑?", line, flags=re.IGNORECASE)
+    ]
+    return "\n".join(cleaned_lines).strip()
 
 
 def _extract_topic_thread_posts(topic_id: int, html_text: str) -> list[TopicThreadPostRecord]:

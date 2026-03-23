@@ -127,6 +127,50 @@ class LLMClient:
             raise ForumBotError("DeepSeek returned an empty quote reply.")
         return output_text
 
+    def has_explicit_question(
+        self,
+        topic_title: str,
+        starter_post_text: str,
+        quoted_text: str,
+        user_message_text: str,
+    ) -> bool:
+        system_prompt = (
+            "You classify forum messages. "
+            "Return only 1 or 0. "
+            "Return 1 only if the user's own message contains a clear direct question that expects an answer. "
+            "Return 0 for statements, reactions, thanks, jokes, rhetorical remarks, or messages without an explicit question. "
+            "Ignore quoted text except for context. "
+            "Do not explain your answer."
+        )
+
+        user_prompt = (
+            f"Topic title:\n{topic_title}\n\n"
+            f"Topic starter post:\n{starter_post_text}\n\n"
+            f"What the user quoted:\n{quoted_text}\n\n"
+            f"What the user wrote:\n{user_message_text}\n\n"
+            "Answer with only one character: 1 or 0."
+        )
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=3,
+            temperature=0,
+        )
+
+        output_text = ""
+        if response.choices:
+            message = response.choices[0].message
+            output_text = (message.content or "").strip()
+
+        match = re.search(r"[01]", output_text)
+        if match is None:
+            raise ForumBotError(f"DeepSeek question classifier returned invalid output: {output_text[:50]}")
+        return match.group(0) == "1"
+
     def generate_taverna_daily_summary(
         self,
         summary_date: str,
