@@ -430,7 +430,8 @@ def extract_quoted_text(raw_html: str) -> str:
 
 
 def extract_post_message_text(raw_html: str) -> str:
-    return _normalize_space(_html_to_text(_remove_blockquotes_html(raw_html)))
+    text = _normalize_space(_html_to_text(_remove_blockquotes_html(raw_html)))
+    return _cleanup_post_message_artifacts(text)
 
 
 def parse_quote_notifications_api(notices: list[dict]) -> list[QuoteNotificationRecord]:
@@ -622,16 +623,7 @@ def _extract_first_post_id(html_text: str) -> int | None:
 
 
 def _extract_first_post_html(html_text: str) -> str:
-    block_patterns: Iterable[str] = (
-        r'<blockquote[^>]+class="[^"]*messageText[^"]*"[^>]*>(.*?)</blockquote>',
-        r'<div[^>]+class="[^"]*messageText[^"]*"[^>]*>(.*?)</div>',
-    )
-    for pattern in block_patterns:
-        match = re.search(pattern, html_text, flags=re.IGNORECASE | re.DOTALL)
-        if match:
-            return match.group(1).strip()
-
-    return ""
+    return _extract_message_text_html(html_text)
 
 
 def _extract_meta_title(html_text: str) -> str | None:
@@ -774,6 +766,13 @@ def _cleanup_quote_artifacts(value: str) -> str:
     return "\n".join(cleaned_lines).strip()
 
 
+def _cleanup_post_message_artifacts(value: str) -> str:
+    text = value.strip()
+    text = re.sub(r"^.+?\s+сказал\(а\):\s*↑?\s*", "", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"\bНажмите,\s*чтобы\s*раскрыть\.{0,3}\b", "", text, flags=re.IGNORECASE)
+    return _normalize_space(text)
+
+
 def _extract_topic_thread_posts(topic_id: int, html_text: str) -> list[TopicThreadPostRecord]:
     posts: list[TopicThreadPostRecord] = []
     blocks = _extract_topic_post_blocks(html_text)
@@ -869,14 +868,74 @@ def _extract_post_number(block: str) -> int | None:
 
 
 def _extract_post_content_html(block: str) -> str:
-    match = re.search(
-        r'<blockquote id="message-content-\d+" class="messageText[^"]*"[^>]*>(.*?)</blockquote>',
-        block,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    if match:
-        return match.group(1).strip()
+    extracted = _extract_message_text_html(block)
+    if extracted:
+        return extracted
     return _extract_first_post_html(block)
+
+
+class _FirstMatchingElementExtractor(HTMLParser):
+    def __init__(self, matcher) -> None:
+        super().__init__(convert_charrefs=False)
+        self.matcher = matcher
+        self.depth = 0
+        self.parts: list[str] = []
+        self.captured = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self.captured:
+            return
+        if self.depth == 0 and self.matcher(tag, attrs):
+            self.depth = 1
+            return
+        if self.depth > 0:
+            self.parts.append(self.get_starttag_text())
+            self.depth += 1
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self.captured:
+            return
+        if self.depth == 0 and self.matcher(tag, attrs):
+            self.captured = True
+            return
+        if self.depth > 0:
+            self.parts.append(self.get_starttag_text())
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.captured or self.depth == 0:
+            return
+        self.depth -= 1
+        if self.depth == 0:
+            self.captured = True
+            return
+        self.parts.append(f"</{tag}>")
+
+    def handle_data(self, data: str) -> None:
+        if not self.captured and self.depth > 0:
+            self.parts.append(data)
+
+    def handle_entityref(self, name: str) -> None:
+        if not self.captured and self.depth > 0:
+            self.parts.append(f"&{name};")
+
+    def handle_charref(self, name: str) -> None:
+        if not self.captured and self.depth > 0:
+            self.parts.append(f"&#{name};")
+
+
+def _extract_message_text_html(html_text: str) -> str:
+    def matcher(tag: str, attrs: list[tuple[str, str | None]]) -> bool:
+        if tag.lower() not in {"blockquote", "div"}:
+            return False
+        attr_map = {key.lower(): (value or "") for key, value in attrs}
+        classes = attr_map.get("class", "")
+        element_id = attr_map.get("id", "")
+        return "messagetext" in classes.lower() or element_id.startswith("message-content-")
+
+    parser = _FirstMatchingElementExtractor(matcher)
+    parser.feed(html_text or "")
+    parser.close()
+    return "".join(parser.parts).strip()
 
 
 def _extract_post_reactions(block: str) -> list[PostReactionRecord]:

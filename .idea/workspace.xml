@@ -4,11 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="63386f1a-d5f6-4c51-aa31-f06c006e8555" name="Changes" comment="смена аватарок">
+    <list default="true" id="63386f1a-d5f6-4c51-aa31-f06c006e8555" name="Changes" comment="фикс суммаризации и квот">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/llm_client.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/llm_client.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/parsers.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/parsers.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/services.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/services.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -84,7 +81,7 @@
       <workItem from="1774043544193" duration="40215000" />
       <workItem from="1774189123910" duration="5918000" />
       <workItem from="1774203383186" duration="12496000" />
-      <workItem from="1774256825219" duration="1714000" />
+      <workItem from="1774256825219" duration="2935000" />
     </task>
     <task id="LOCAL-00001" summary="Start">
       <option name="closed" value="true" />
@@ -246,7 +243,15 @@
       <option name="project" value="LOCAL" />
       <updated>1774217571417</updated>
     </task>
-    <option name="localTasksCounter" value="21" />
+    <task id="LOCAL-00021" summary="фикс суммаризации и квот">
+      <option name="closed" value="true" />
+      <created>1774258975767</created>
+      <option name="number" value="00021" />
+      <option name="presentableId" value="LOCAL-00021" />
+      <option name="project" value="LOCAL" />
+      <updated>1774258975767</updated>
+    </task>
+    <option name="localTasksCounter" value="22" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -277,6 +282,7 @@
     <MESSAGE value="фиксы" />
     <MESSAGE value="+- стейбл версия" />
     <MESSAGE value="смена аватарок" />
-    <option name="LAST_COMMIT_MESSAGE" value="смена аватарок" />
+    <MESSAGE value="фикс суммаризации и квот" />
+    <option name="LAST_COMMIT_MESSAGE" value="фикс суммаризации и квот" />
   </component>
 </project>
