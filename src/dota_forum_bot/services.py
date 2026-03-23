@@ -141,6 +141,8 @@ class DailyAvatarResult:
 
 
 class ForumSyncService:
+    WORKER_MIN_SLEEP_SECONDS = 30
+    WORKER_MAX_SLEEP_SECONDS = 180
     DAILY_SUMMARY_RETRY_DELAY_SECONDS = 600
     DAILY_SUMMARY_IN_PROGRESS_TIMEOUT_SECONDS = 300
     DAILY_TOPIC_PROMPT_CODE = "daily_relationship_topic"
@@ -157,6 +159,15 @@ class ForumSyncService:
     def _emit(log, message: str) -> None:
         if log is not None:
             log(message)
+
+    @classmethod
+    def _next_worker_sleep_seconds(cls, upper_bound: int | None = None) -> int:
+        minimum = cls.WORKER_MIN_SLEEP_SECONDS
+        maximum = cls.WORKER_MAX_SLEEP_SECONDS
+        if upper_bound is not None:
+            maximum = max(1, min(maximum, upper_bound))
+            minimum = min(minimum, maximum)
+        return random.randint(minimum, maximum)
 
     @staticmethod
     def _human_reply_delay_minutes(reply_count: int | None) -> int:
@@ -1240,11 +1251,17 @@ class ForumSyncService:
             timestamp = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S %Z")
             print(f"[{timestamp}] {message}")
 
+        def sleep_interval(reason: str, upper_bound: int | None = None) -> None:
+            seconds = self._next_worker_sleep_seconds(upper_bound=upper_bound)
+            message = f"{reason} Sleeping for {seconds} seconds.".strip()
+            log(message)
+            time.sleep(seconds)
+
         while True:
             cycle += 1
             try:
                 log(
-                    f"Cycle #{cycle} started: interval={poll_interval_seconds}s, "
+                    f"Cycle #{cycle} started: interval={self.WORKER_MIN_SLEEP_SECONDS}-{self.WORKER_MAX_SLEEP_SECONDS}s, "
                     f"max_age_days={max_age_days}, batch_limit={batch_limit}"
                 )
                 result = self.auto_reply_recent_topics_with_llm(
@@ -1257,15 +1274,13 @@ class ForumSyncService:
                     f"Cycle #{cycle} finished: scanned={result.scanned}, "
                     f"processed={result.processed}, published={result.published}, failed={result.failed}"
                 )
-                log(f"Sleeping for {poll_interval_seconds} seconds before next cycle.")
-                time.sleep(poll_interval_seconds)
+                sleep_interval("Before next cycle.")
             except KeyboardInterrupt:
                 log("Worker stopped by user.")
                 raise
             except Exception as exc:
                 log(f"Cycle #{cycle} failed: {exc}")
-                log(f"Sleeping for {poll_interval_seconds} seconds before retry.")
-                time.sleep(poll_interval_seconds)
+                sleep_interval("Before retry.")
 
     def run_quote_reply_worker(
         self,
@@ -1279,11 +1294,17 @@ class ForumSyncService:
             timestamp = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S %Z")
             print(f"[{timestamp}] {message}")
 
+        def sleep_interval(reason: str, upper_bound: int | None = None) -> None:
+            seconds = self._next_worker_sleep_seconds(upper_bound=upper_bound)
+            message = f"{reason} Sleeping for {seconds} seconds.".strip()
+            log(message)
+            time.sleep(seconds)
+
         while True:
             cycle += 1
             try:
                 log(
-                    f"Quote worker cycle #{cycle} started: interval={poll_interval_seconds}s, "
+                    f"Quote worker cycle #{cycle} started: interval={self.WORKER_MIN_SLEEP_SECONDS}-{self.WORKER_MAX_SLEEP_SECONDS}s, "
                     f"batch_limit={batch_limit}"
                 )
                 result = self.reply_to_quote_notifications_with_llm(
@@ -1296,15 +1317,13 @@ class ForumSyncService:
                     f"new={result.new_notifications}, processed={result.processed}, "
                     f"replied={result.replied}, ignored={result.ignored}, failed={result.failed}"
                 )
-                log(f"Sleeping for {poll_interval_seconds} seconds before next cycle.")
-                time.sleep(poll_interval_seconds)
+                sleep_interval("Before next cycle.")
             except KeyboardInterrupt:
                 log("Quote worker stopped by user.")
                 raise
             except Exception as exc:
                 log(f"Quote worker cycle #{cycle} failed: {exc}")
-                log(f"Sleeping for {poll_interval_seconds} seconds before retry.")
-                time.sleep(poll_interval_seconds)
+                sleep_interval("Before retry.")
 
     def publish_daily_taverna_summary(
         self,
@@ -1487,13 +1506,18 @@ class ForumSyncService:
             timestamp = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S %Z")
             print(f"[{timestamp}] {message}")
 
+        def sleep_interval(reason: str, upper_bound: int | None = None) -> None:
+            seconds = self._next_worker_sleep_seconds(upper_bound=upper_bound)
+            message = f"{reason} Sleeping for {seconds} seconds.".strip()
+            log(message)
+            time.sleep(seconds)
+
         while True:
             cycle += 1
             try:
                 schedule = self.db.get_daily_summary_schedule()
                 if not schedule.get("enabled"):
-                    log(f"Daily summary cycle #{cycle}: disabled, sleeping {poll_interval_seconds}s.")
-                    time.sleep(poll_interval_seconds)
+                    sleep_interval(f"Daily summary cycle #{cycle}: disabled.")
                     continue
 
                 now_local = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE)
@@ -1505,9 +1529,9 @@ class ForumSyncService:
                     if existing["status"] in {"published", "no_topics", "skipped"}:
                         log(
                             f"Daily summary cycle #{cycle}: today's run already exists "
-                            f"with status={existing['status']}, sleeping {poll_interval_seconds}s."
+                            f"with status={existing['status']}."
                         )
-                        time.sleep(poll_interval_seconds)
+                        sleep_interval("")
                         continue
                     if existing["status"] == "in_progress":
                         updated_at = existing.get("updated_at")
@@ -1539,14 +1563,10 @@ class ForumSyncService:
                                     f"Daily summary cycle #{cycle}: today's run is still in progress, "
                                     f"stale in {wait_seconds}s."
                                 )
-                                time.sleep(min(poll_interval_seconds, max(1, wait_seconds)))
+                                sleep_interval("", upper_bound=max(1, wait_seconds))
                                 continue
                         else:
-                            log(
-                                f"Daily summary cycle #{cycle}: today's run is still in progress, "
-                                f"sleeping {poll_interval_seconds}s."
-                            )
-                            time.sleep(poll_interval_seconds)
+                            sleep_interval(f"Daily summary cycle #{cycle}: today's run is still in progress.")
                             continue
                     if existing["status"] == "failed":
                         updated_at = existing.get("updated_at")
@@ -1558,15 +1578,14 @@ class ForumSyncService:
                                     f"Daily summary cycle #{cycle}: previous run failed, "
                                     f"retry after {wait_seconds}s."
                                 )
-                                time.sleep(min(poll_interval_seconds, max(1, wait_seconds)))
+                                sleep_interval("", upper_bound=max(1, wait_seconds))
                                 continue
 
                 if now_local < scheduled_at:
-                    log(
-                        f"Daily summary cycle #{cycle}: waiting for schedule "
-                        f"{schedule_time.strftime('%H:%M')}, sleeping {poll_interval_seconds}s."
+                    sleep_interval(
+                        f"Daily summary cycle #{cycle}: waiting for schedule {schedule_time.strftime('%H:%M')}.",
+                        upper_bound=max(1, int((scheduled_at - now_local).total_seconds())),
                     )
-                    time.sleep(poll_interval_seconds)
                     continue
 
                 log(
@@ -1583,13 +1602,13 @@ class ForumSyncService:
                     f"Daily summary cycle #{cycle} finished: "
                     f"status={result.status}, topics={result.topics_selected}, url={result.topic_url}"
                 )
-                time.sleep(poll_interval_seconds)
+                sleep_interval(f"Daily summary cycle #{cycle}: finished.")
             except KeyboardInterrupt:
                 log("Daily summary worker stopped by user.")
                 raise
             except Exception as exc:
                 log(f"Daily summary cycle #{cycle} failed: {exc}")
-                time.sleep(poll_interval_seconds)
+                sleep_interval(f"Daily summary cycle #{cycle}: retrying after failure.")
 
     def publish_daily_forum_topic(
         self,
@@ -1847,13 +1866,18 @@ class ForumSyncService:
             timestamp = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S %Z")
             print(f"[{timestamp}] {message}")
 
+        def sleep_interval(reason: str, upper_bound: int | None = None) -> None:
+            seconds = self._next_worker_sleep_seconds(upper_bound=upper_bound)
+            message = f"{reason} Sleeping for {seconds} seconds.".strip()
+            log(message)
+            time.sleep(seconds)
+
         while True:
             cycle += 1
             try:
                 schedule = self.db.get_daily_topic_schedule()
                 if not schedule.get("enabled"):
-                    log(f"Daily topic cycle #{cycle}: disabled, sleeping {poll_interval_seconds}s.")
-                    time.sleep(poll_interval_seconds)
+                    sleep_interval(f"Daily topic cycle #{cycle}: disabled.")
                     continue
 
                 now_local = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE)
@@ -1865,9 +1889,9 @@ class ForumSyncService:
                     if existing["status"] in {"published", "skipped"}:
                         log(
                             f"Daily topic cycle #{cycle}: today's run already exists "
-                            f"with status={existing['status']}, sleeping {poll_interval_seconds}s."
+                            f"with status={existing['status']}."
                         )
-                        time.sleep(poll_interval_seconds)
+                        sleep_interval("")
                         continue
                     if existing["status"] == "in_progress":
                         updated_at = existing.get("updated_at")
@@ -1896,14 +1920,10 @@ class ForumSyncService:
                                     f"Daily topic cycle #{cycle}: today's run is still in progress, "
                                     f"stale in {wait_seconds}s."
                                 )
-                                time.sleep(min(poll_interval_seconds, max(1, wait_seconds)))
+                                sleep_interval("", upper_bound=max(1, wait_seconds))
                                 continue
                         else:
-                            log(
-                                f"Daily topic cycle #{cycle}: today's run is still in progress, "
-                                f"sleeping {poll_interval_seconds}s."
-                            )
-                            time.sleep(poll_interval_seconds)
+                            sleep_interval(f"Daily topic cycle #{cycle}: today's run is still in progress.")
                             continue
                     if existing["status"] == "failed":
                         updated_at = existing.get("updated_at")
@@ -1915,15 +1935,14 @@ class ForumSyncService:
                                     f"Daily topic cycle #{cycle}: previous run failed, "
                                     f"retry after {wait_seconds}s."
                                 )
-                                time.sleep(min(poll_interval_seconds, max(1, wait_seconds)))
+                                sleep_interval("", upper_bound=max(1, wait_seconds))
                                 continue
 
                 if now_local < scheduled_at:
-                    log(
-                        f"Daily topic cycle #{cycle}: waiting for schedule "
-                        f"{schedule_time.strftime('%H:%M')}, sleeping {poll_interval_seconds}s."
+                    sleep_interval(
+                        f"Daily topic cycle #{cycle}: waiting for schedule {schedule_time.strftime('%H:%M')}.",
+                        upper_bound=max(1, int((scheduled_at - now_local).total_seconds())),
                     )
-                    time.sleep(poll_interval_seconds)
                     continue
 
                 log(
@@ -1939,13 +1958,13 @@ class ForumSyncService:
                     f"Daily topic cycle #{cycle} finished: "
                     f"status={result.status}, title={result.topic_title}, url={result.topic_url}"
                 )
-                time.sleep(poll_interval_seconds)
+                sleep_interval(f"Daily topic cycle #{cycle}: finished.")
             except KeyboardInterrupt:
                 log("Daily topic worker stopped by user.")
                 raise
             except Exception as exc:
                 log(f"Daily topic cycle #{cycle} failed: {exc}")
-                time.sleep(poll_interval_seconds)
+                sleep_interval(f"Daily topic cycle #{cycle}: retrying after failure.")
 
     def run_daily_avatar_worker(
         self,
@@ -1957,13 +1976,18 @@ class ForumSyncService:
             timestamp = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S %Z")
             print(f"[{timestamp}] {message}")
 
+        def sleep_interval(reason: str, upper_bound: int | None = None) -> None:
+            seconds = self._next_worker_sleep_seconds(upper_bound=upper_bound)
+            message = f"{reason} Sleeping for {seconds} seconds.".strip()
+            log(message)
+            time.sleep(seconds)
+
         while True:
             cycle += 1
             try:
                 schedule = self.db.get_daily_avatar_schedule()
                 if not schedule.get("enabled"):
-                    log(f"Daily avatar cycle #{cycle}: disabled, sleeping {poll_interval_seconds}s.")
-                    time.sleep(poll_interval_seconds)
+                    sleep_interval(f"Daily avatar cycle #{cycle}: disabled.")
                     continue
 
                 now_local = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE)
@@ -1975,9 +1999,9 @@ class ForumSyncService:
                     if existing["status"] in {"updated", "skipped"}:
                         log(
                             f"Daily avatar cycle #{cycle}: today's run already exists "
-                            f"with status={existing['status']}, sleeping {poll_interval_seconds}s."
+                            f"with status={existing['status']}."
                         )
-                        time.sleep(poll_interval_seconds)
+                        sleep_interval("")
                         continue
                     if existing["status"] == "in_progress":
                         updated_at = existing.get("updated_at")
@@ -2006,14 +2030,10 @@ class ForumSyncService:
                                     f"Daily avatar cycle #{cycle}: today's run is still in progress, "
                                     f"stale in {wait_seconds}s."
                                 )
-                                time.sleep(min(poll_interval_seconds, max(1, wait_seconds)))
+                                sleep_interval("", upper_bound=max(1, wait_seconds))
                                 continue
                         else:
-                            log(
-                                f"Daily avatar cycle #{cycle}: today's run is still in progress, "
-                                f"sleeping {poll_interval_seconds}s."
-                            )
-                            time.sleep(poll_interval_seconds)
+                            sleep_interval(f"Daily avatar cycle #{cycle}: today's run is still in progress.")
                             continue
                     if existing["status"] == "failed":
                         updated_at = existing.get("updated_at")
@@ -2025,15 +2045,14 @@ class ForumSyncService:
                                     f"Daily avatar cycle #{cycle}: previous run failed, "
                                     f"retry after {wait_seconds}s."
                                 )
-                                time.sleep(min(poll_interval_seconds, max(1, wait_seconds)))
+                                sleep_interval("", upper_bound=max(1, wait_seconds))
                                 continue
 
                 if now_local < scheduled_at:
-                    log(
-                        f"Daily avatar cycle #{cycle}: waiting for schedule "
-                        f"{schedule_time.strftime('%H:%M')}, sleeping {poll_interval_seconds}s."
+                    sleep_interval(
+                        f"Daily avatar cycle #{cycle}: waiting for schedule {schedule_time.strftime('%H:%M')}.",
+                        upper_bound=max(1, int((scheduled_at - now_local).total_seconds())),
                     )
-                    time.sleep(poll_interval_seconds)
                     continue
 
                 log(
@@ -2045,10 +2064,10 @@ class ForumSyncService:
                     f"Daily avatar cycle #{cycle} finished: "
                     f"status={result.status}, avatar_number={result.avatar_number}, url={result.avatar_url}"
                 )
-                time.sleep(poll_interval_seconds)
+                sleep_interval(f"Daily avatar cycle #{cycle}: finished.")
             except KeyboardInterrupt:
                 log("Daily avatar worker stopped by user.")
                 raise
             except Exception as exc:
                 log(f"Daily avatar cycle #{cycle} failed: {exc}")
-                time.sleep(poll_interval_seconds)
+                sleep_interval(f"Daily avatar cycle #{cycle}: retrying after failure.")
