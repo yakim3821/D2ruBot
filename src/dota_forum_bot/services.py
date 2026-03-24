@@ -1334,7 +1334,7 @@ class ForumSyncService:
     ) -> DailySummaryResult:
         now_local = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE)
         summary_date = now_local.date()
-        title = f"Суммаризация - {summary_date.strftime('%d.%m.%Y')}"
+        title = f"Дайджест - {summary_date.strftime('%d.%m.%Y')}"
         schedule = self.db.get_daily_summary_schedule()
         existing = self.db.get_daily_summary_run(summary_date)
         start_message = (

@@ -422,7 +422,7 @@ def main() -> int:
                 summary_date=summary_date,
                 status="skipped",
                 scheduled_time=schedule.get("schedule_time"),
-                topic_title=f"Суммаризация - {summary_date.strftime('%d.%m.%Y')}",
+                topic_title=f"Дайджест - {summary_date.strftime('%d.%m.%Y')}",
                 error_message="Skipped manually by operator.",
             )
             print(f"Daily summary marked as skipped for {summary_date.isoformat()}.")
