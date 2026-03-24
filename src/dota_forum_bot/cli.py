@@ -91,6 +91,17 @@ def build_parser() -> argparse.ArgumentParser:
     daily_summary_parser.add_argument("--lookback-hours", type=int, default=24, help="How many past hours to include.")
     daily_summary_parser.add_argument("--force", action="store_true", help="Publish even if today's summary run already exists.")
 
+    daily_summary_test_parser = subparsers.add_parser(
+        "publish-daily-summary-test",
+        aliases=["dota-forum-bot-summary-test"],
+        help="Build a daily Taverna summary and send it to a safe test conversation instead of publishing a thread.",
+    )
+    daily_summary_test_parser.add_argument("--lookback-hours", type=int, default=24, help="How many past hours to include.")
+    daily_summary_test_parser.add_argument(
+        "--conversation-url",
+        help="Absolute conversation URL where the generated summary should be sent.",
+    )
+
     daily_summary_worker_parser = subparsers.add_parser(
         "run-daily-summary-worker",
         help="Run a background worker that publishes one Taverna summary thread per day at the configured UI time.",
@@ -380,6 +391,32 @@ def main() -> int:
             )
             print(
                 f"Daily summary finished: status={result.status}, "
+                f"topics={result.topics_selected}, url={result.topic_url or '-'}"
+            )
+            for detail in result.details:
+                print(detail)
+        elif args.command in {"publish-daily-summary-test", "dota-forum-bot-summary-test"}:
+            conversation_url = (
+                args.conversation_url
+                or settings.summary_test_conversation_url
+                or settings.test_conversation_url
+            )
+            if not conversation_url:
+                raise ForumBotError(
+                    "Set DOTA2_FORUM_SUMMARY_TEST_CONVERSATION_URL or pass --conversation-url for summary test delivery."
+                )
+            llm = LLMClient(
+                api_key=settings.deepseek_api_key,
+                model=settings.deepseek_model,
+                base_url=settings.deepseek_base_url,
+            )
+            result = service.send_daily_taverna_summary_test(
+                llm=llm,
+                conversation_url=conversation_url,
+                lookback_hours=args.lookback_hours,
+            )
+            print(
+                f"Daily summary test finished: status={result.status}, "
                 f"topics={result.topics_selected}, url={result.topic_url or '-'}"
             )
             for detail in result.details:

@@ -196,6 +196,96 @@ class LLMClient:
             raise ForumBotError("DeepSeek returned an empty daily summary.")
         return output_text
 
+    @staticmethod
+    def _clean_summary_digest_line(text: str, limit: int = 180) -> str:
+        value = re.sub(r"\s+", " ", (text or "").replace("\r", " ").replace("\n", " ")).strip(" -:;,.")
+        if not value:
+            raise ForumBotError("Daily summary row is missing required content.")
+        if len(value) <= limit:
+            return value
+        return value[: limit - 1].rstrip() + "…"
+
+    def generate_taverna_daily_summary_rows(
+        self,
+        summary_date: str,
+        topics_payload: list[dict],
+    ) -> list[dict[str, object]]:
+        if not topics_payload:
+            raise ForumBotError("No topic data was provided for daily summary generation.")
+
+        system_prompt = (
+            "Ты готовишь очень короткий табличный дайджест для форума dota2.ru, раздел Таверна. "
+            "Для каждой темы нужны только 3 коротких поля: SUMMARY, REACTION, OUTCOME. "
+            "Пиши по-русски, естественно, кратко и без канцелярита. "
+            "Каждое поле должно быть одной короткой фразой или одним коротким предложением. "
+            "Не используй списки, markdown, HTML, BBCode и вступления. "
+            "Не повторяй название темы внутри полей. "
+            "Не выдумывай факты вне переданных данных. "
+            "Если в теме был срач, рофлы или хейт, передай это коротко и нейтрально."
+        )
+
+        expected_ids = [int(item["topic_id"]) for item in topics_payload]
+        user_prompt = (
+            f"Дата публикации: {summary_date}\n\n"
+            f"Верни ровно {len(topics_payload)} блоков в том же порядке, что и во входных данных.\n"
+            "Формат каждого блока строго такой:\n"
+            "TOPIC_ID: <число>\n"
+            "SUMMARY: <краткое содержание>\n"
+            "REACTION: <реакция пользователей>\n"
+            "OUTCOME: <итог темы>\n"
+            "END_TOPIC\n\n"
+            f"Ожидаемые topic_id: {json.dumps(expected_ids, ensure_ascii=False)}\n\n"
+            f"Данные по темам:\n{json.dumps(topics_payload, ensure_ascii=False)}"
+        )
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=2200,
+            temperature=0.35,
+        )
+
+        output_text = ""
+        if response.choices:
+            message = response.choices[0].message
+            output_text = (message.content or "").strip()
+        if not output_text:
+            raise ForumBotError("DeepSeek returned empty rows for daily summary.")
+
+        blocks = [block.strip() for block in re.split(r"\bEND_TOPIC\b", output_text) if block.strip()]
+        parsed_by_id: dict[int, dict[str, object]] = {}
+        for block in blocks:
+            topic_id_match = re.search(r"TOPIC_ID:\s*(\d+)", block)
+            summary_match = re.search(r"SUMMARY:\s*(.+)", block)
+            reaction_match = re.search(r"REACTION:\s*(.+)", block)
+            outcome_match = re.search(r"OUTCOME:\s*(.+)", block)
+            if not (topic_id_match and summary_match and reaction_match and outcome_match):
+                continue
+
+            topic_id = int(topic_id_match.group(1))
+            parsed_by_id[topic_id] = {
+                "topic_id": topic_id,
+                "summary": self._clean_summary_digest_line(summary_match.group(1)),
+                "reaction": self._clean_summary_digest_line(reaction_match.group(1)),
+                "outcome": self._clean_summary_digest_line(outcome_match.group(1)),
+            }
+
+        rows: list[dict[str, object]] = []
+        missing_ids: list[int] = []
+        for topic_id in expected_ids:
+            item = parsed_by_id.get(topic_id)
+            if item is None:
+                missing_ids.append(topic_id)
+                continue
+            rows.append(item)
+
+        if missing_ids:
+            raise ForumBotError(f"DeepSeek summary rows are missing topic ids: {missing_ids}")
+        return rows
+
     def generate_daily_forum_topic(
         self,
         prompt_text: str,

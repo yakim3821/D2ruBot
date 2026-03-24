@@ -42,6 +42,7 @@ class Settings:
     deepseek_api_key: str
     deepseek_model: str
     deepseek_base_url: str
+    summary_test_conversation_url: str | None
     test_conversation_url: str | None
     test_thread_url: str | None
     test_message: str | None
@@ -62,6 +63,10 @@ class Settings:
         deepseek_api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
         deepseek_model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip() or "deepseek-chat"
         deepseek_base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip().rstrip("/")
+        summary_test_conversation_url = os.getenv(
+            "DOTA2_FORUM_SUMMARY_TEST_CONVERSATION_URL",
+            os.getenv("DOTA2_FORUM_TEST_CONVERSATION_URL", ""),
+        ).strip() or None
         test_conversation_url = os.getenv(
             "DOTA2_FORUM_TEST_CONVERSATION_URL",
             "https://dota2.ru/forum/conversation/123.1039856/",
@@ -83,6 +88,7 @@ class Settings:
             deepseek_api_key=deepseek_api_key,
             deepseek_model=deepseek_model,
             deepseek_base_url=deepseek_base_url,
+            summary_test_conversation_url=summary_test_conversation_url,
             test_conversation_url=test_conversation_url,
             test_thread_url=test_thread_url,
             test_message=test_message,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import time
 import re
 from dataclasses import dataclass, field
@@ -118,6 +119,13 @@ class DailySummaryResult:
     status: str
     topic_title: str | None = None
     topic_url: str | None = None
+    details: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DailySummaryTopicSelection:
+    scan_result: ScanResult
+    topics: list[dict[str, object]]
     details: list[str] = field(default_factory=list)
 
 
@@ -314,6 +322,127 @@ class ForumSyncService:
         ).strip()
 
     @staticmethod
+    def _clean_summary_table_text(text: str, limit: int = 220) -> str:
+        value = re.sub(r"\s+", " ", (text or "").replace("\r", " ").replace("\n", " ")).strip()
+        if not value:
+            return "—"
+        if len(value) <= limit:
+            return value
+        return value[: limit - 1].rstrip() + "…"
+
+    @staticmethod
+    def _summary_table_card_color() -> str:
+        base_rgb = (0x26, 0x27, 0x2C)
+        factor = 1 + random.uniform(-0.2, 0.2)
+        adjusted = [
+            max(0, min(255, int(round(channel * factor))))
+            for channel in base_rgb
+        ]
+        return "#" + "".join(f"{channel:02x}" for channel in adjusted)
+
+    @staticmethod
+    def _summary_table_empty_cell(width: str) -> str:
+        return (
+            f'<td style="width: {width}; text-align: center;" '
+            f'data-mce-style="width: {width}; text-align: center;"><br></td>'
+        )
+
+    @classmethod
+    def _build_daily_summary_table(
+        cls,
+        summary_rows: list[dict[str, object]],
+        topics_payload: list[dict[str, object]],
+    ) -> str:
+        payload_by_id = {
+            int(item["topic_id"]): item
+            for item in topics_payload
+        }
+        cards: list[dict[str, str]] = []
+        for row in summary_rows:
+            topic_id = int(row["topic_id"])
+            payload = payload_by_id.get(topic_id)
+            if payload is None:
+                continue
+            cards.append(
+                {
+                    "title": str(payload.get("title") or ""),
+                    "url": str(payload.get("url") or ""),
+                    "summary": cls._clean_summary_table_text(str(row.get("summary") or ""), limit=220),
+                    "reaction": cls._clean_summary_table_text(str(row.get("reaction") or ""), limit=220),
+                    "outcome": cls._clean_summary_table_text(str(row.get("outcome") or ""), limit=220),
+                    "background": cls._summary_table_card_color(),
+                }
+            )
+
+        if not cards:
+            raise ValueError("No summary cards were built for the daily summary table.")
+
+        width = "33.3333%"
+        chunks = [cards[index:index + 3] for index in range(0, len(cards), 3)]
+        rows_html: list[str] = []
+
+        for chunk_index, chunk in enumerate(chunks):
+            title_cells: list[str] = []
+            summary_cells: list[str] = []
+            reaction_cells: list[str] = []
+            outcome_cells: list[str] = []
+
+            for card in chunk:
+                background = card["background"]
+                title_cells.append(
+                    (
+                        f'<td style="width: {width}; text-align: center; background-color: {background};" '
+                        f'data-mce-style="width: {width}; text-align: center; background-color: {background};">'
+                        f'<a href="{html.escape(card["url"], quote=True)}" target="_blank" rel="noopener">'
+                        f'{html.escape(card["title"])}</a></td>'
+                    )
+                )
+                summary_cells.append(
+                    (
+                        f'<td style="width: {width}; background-color: {background}; text-align: left;" '
+                        f'data-mce-style="width: {width}; background-color: {background}; text-align: left;">'
+                        f'{html.escape(card["summary"])}</td>'
+                    )
+                )
+                reaction_cells.append(
+                    (
+                        f'<td style="width: {width}; background-color: {background}; text-align: left;" '
+                        f'data-mce-style="width: {width}; background-color: {background}; text-align: left;">'
+                        f'{html.escape(card["reaction"])}</td>'
+                    )
+                )
+                outcome_cells.append(
+                    (
+                        f'<td style="width: {width}; background-color: {background}; text-align: left;" '
+                        f'data-mce-style="width: {width}; background-color: {background}; text-align: left;">'
+                        f'{html.escape(card["outcome"])}</td>'
+                    )
+                )
+
+            while len(title_cells) < 3:
+                empty_cell = cls._summary_table_empty_cell(width)
+                title_cells.append(empty_cell)
+                summary_cells.append(empty_cell)
+                reaction_cells.append(empty_cell)
+                outcome_cells.append(empty_cell)
+
+            rows_html.append("<tr>" + "".join(title_cells) + "</tr>")
+            rows_html.append("<tr>" + "".join(summary_cells) + "</tr>")
+            rows_html.append("<tr>" + "".join(reaction_cells) + "</tr>")
+            rows_html.append("<tr>" + "".join(outcome_cells) + "</tr>")
+
+            if chunk_index != len(chunks) - 1:
+                spacer_cells = "".join(cls._summary_table_empty_cell(width) for _ in range(3))
+                rows_html.append("<tr>" + spacer_cells + "</tr>")
+
+        return (
+            '<table style="width: 100%;" data-mce-style="width: 100%;" class="mce-item-table">'
+            "<tbody>"
+            + "".join(rows_html)
+            + "</tbody></table>"
+        )
+
+    @staticmethod
     def _split_summary_spoiler_into_paragraphs(content: str) -> str:
         lines = [line.strip() for line in content.split("\n") if line.strip()]
         if not lines:
@@ -427,7 +556,7 @@ class ForumSyncService:
 
         highlight_posts = []
         seen_post_ids: set[int] = set()
-        for candidate in [*replies[:5], *popular_posts[:3], *replies[-2:]]:
+        for candidate in [*replies[:3], *popular_posts[:2], *replies[-1:]]:
             if candidate is None or candidate.forum_post_id in seen_post_ids:
                 continue
             seen_post_ids.add(candidate.forum_post_id)
@@ -435,7 +564,7 @@ class ForumSyncService:
                 {
                     "post_number": candidate.post_number,
                     "author": candidate.author.username if candidate.author else None,
-                    "text": self._trim_text(candidate.content_text, 420),
+                    "text": self._trim_text(candidate.content_text, 220),
                     "positive_reactions": candidate.positive_reaction_count,
                     "total_reactions": candidate.total_reaction_count,
                     "reactions": self._summarize_reactions(candidate),
@@ -446,13 +575,13 @@ class ForumSyncService:
             {
                 "post_number": candidate.post_number,
                 "author": candidate.author.username if candidate.author else None,
-                "text": self._trim_text(candidate.content_text, 280),
+                "text": self._trim_text(candidate.content_text, 160),
                 "post_url": candidate.post_url,
                 "positive_reactions": candidate.positive_reaction_count,
                 "total_reactions": candidate.total_reaction_count,
                 "reactions": self._summarize_reactions(candidate),
             }
-            for candidate in popular_posts[:3]
+            for candidate in popular_posts[:2]
         ]
 
         return {
@@ -462,11 +591,66 @@ class ForumSyncService:
             "created_at": self._format_dt(topic.get("created_at_forum") or topic.get("first_seen_at")),
             "reply_count": max(0, len(replies)),
             "participant_count": len(participants),
-            "participants_sample": participants[:12],
-            "starter_post": self._trim_text(starter.content_text if starter else "", 1600),
+            "participants_sample": participants[:8],
+            "starter_post": self._trim_text(starter.content_text if starter else "", 900),
             "highlights": highlight_posts,
             "popular_comments": popular_comments,
         }
+
+    def _select_recent_daily_summary_topics(
+        self,
+        lookback_hours: int,
+        log=None,
+    ) -> DailySummaryTopicSelection:
+        scan_result = self.scan_taverna()
+        topics = self.db.get_topics_created_since(
+            hours=lookback_hours,
+            forum_section_id=6,
+            exclude_pinned=True,
+            exclude_closed=True,
+            limit=50,
+        )
+        details = [
+            (
+                f"Fresh topics for summary: found={len(topics)}, "
+                f"scan_found={scan_result.found}, scan_saved={scan_result.inserted_or_updated}"
+            )
+        ]
+        for message in details:
+            self._emit(log, message)
+        return DailySummaryTopicSelection(scan_result=scan_result, topics=topics, details=details)
+
+    def _collect_daily_summary_payloads(
+        self,
+        topics: list[dict[str, object]],
+        details: list[str],
+        log=None,
+    ) -> list[dict[str, object]]:
+        payloads: list[dict[str, object]] = []
+        for topic in topics:
+            self._emit(log, f"Collecting topic {topic['forum_topic_id']}: {topic['title']}")
+            try:
+                _, posts = self._fetch_topic_thread_posts(topic["topic_url"])
+                if not posts:
+                    skip_message = (
+                        f"Skipping topic {topic['forum_topic_id']}: no posts were parsed "
+                        f"from {topic['topic_url']}"
+                    )
+                    self._emit(log, skip_message)
+                    details.append(skip_message)
+                    continue
+                payloads.append(self._build_summary_topic_payload(topic=topic, posts=posts))
+            except Exception as exc:
+                skip_message = (
+                    f"Skipping topic {topic['forum_topic_id']} ({topic['topic_url']}): {exc}"
+                )
+                self._emit(log, skip_message)
+                details.append(skip_message)
+                continue
+
+        if not payloads:
+            raise ValueError("No valid topics were collected for daily summary.")
+        return payloads
 
     def _fetch_topic_thread_posts(self, topic_url: str) -> tuple[TopicRecord, list]:
         first_page = self._fetch_page_or_raise(topic_url, context="topic thread page")
@@ -1369,22 +1553,10 @@ class ForumSyncService:
                 details=[message],
             )
 
-        scan_result = self.scan_taverna()
-        topics = self.db.get_topics_created_since(
-            hours=lookback_hours,
-            forum_section_id=6,
-            exclude_pinned=True,
-            exclude_closed=True,
-            limit=50,
-        )
-        details = [
-            (
-                f"Fresh topics for summary: found={len(topics)}, "
-                f"scan_found={scan_result.found}, scan_saved={scan_result.inserted_or_updated}"
-            )
-        ]
-        for message in details:
-            self._emit(log, message)
+        selection = self._select_recent_daily_summary_topics(lookback_hours=lookback_hours, log=log)
+        scan_result = selection.scan_result
+        topics = selection.topics
+        details = list(selection.details)
 
         if not topics:
             self.db.upsert_daily_summary_run(
@@ -1412,36 +1584,12 @@ class ForumSyncService:
         )
 
         try:
-            payloads = []
-            for topic in topics:
-                self._emit(log, f"Collecting topic {topic['forum_topic_id']}: {topic['title']}")
-                try:
-                    _, posts = self._fetch_topic_thread_posts(topic["topic_url"])
-                    if not posts:
-                        skip_message = (
-                            f"Skipping topic {topic['forum_topic_id']}: no posts were parsed "
-                            f"from {topic['topic_url']}"
-                        )
-                        self._emit(log, skip_message)
-                        details.append(skip_message)
-                        continue
-                    payloads.append(self._build_summary_topic_payload(topic=topic, posts=posts))
-                except Exception as exc:
-                    skip_message = (
-                        f"Skipping topic {topic['forum_topic_id']} ({topic['topic_url']}): {exc}"
-                    )
-                    self._emit(log, skip_message)
-                    details.append(skip_message)
-                    continue
-
-            if not payloads:
-                raise ValueError("No valid topics were collected for daily summary.")
-
-            body = llm.generate_taverna_daily_summary(
+            payloads = self._collect_daily_summary_payloads(topics=topics, details=details, log=log)
+            summary_rows = llm.generate_taverna_daily_summary_rows(
                 summary_date=summary_date.strftime("%d.%m.%Y"),
                 topics_payload=payloads,
             )
-            body = self._normalize_generated_summary_with_payload(body, payloads)
+            body = self._build_daily_summary_table(summary_rows, payloads)
             created = self.client.create_topic(
                 forum_id=6,
                 title=title,
@@ -1491,6 +1639,73 @@ class ForumSyncService:
                 topics_selected=len(topics),
                 status="failed",
                 topic_title=title,
+                details=details,
+            )
+
+    def send_daily_taverna_summary_test(
+        self,
+        llm: LLMClient,
+        conversation_url: str,
+        lookback_hours: int = 24,
+        log=None,
+    ) -> DailySummaryResult:
+        now_local = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE)
+        summary_date = now_local.date()
+        title = f"Дайджест - {summary_date.strftime('%d.%m.%Y')}"
+        start_message = (
+            f"Daily summary test started: date={summary_date.isoformat()}, "
+            f"lookback_hours={lookback_hours}, conversation={conversation_url}"
+        )
+        self._emit(log, start_message)
+
+        selection = self._select_recent_daily_summary_topics(lookback_hours=lookback_hours, log=log)
+        scan_result = selection.scan_result
+        topics = selection.topics
+        details = list(selection.details)
+
+        if not topics:
+            return DailySummaryResult(
+                summary_date=summary_date,
+                scanned=scan_result.found,
+                topics_selected=0,
+                status="no_topics",
+                topic_title=title,
+                topic_url=conversation_url,
+                details=details,
+            )
+
+        try:
+            payloads = self._collect_daily_summary_payloads(topics=topics, details=details, log=log)
+            summary_rows = llm.generate_taverna_daily_summary_rows(
+                summary_date=summary_date.strftime("%d.%m.%Y"),
+                topics_payload=payloads,
+            )
+            body = self._build_daily_summary_table(summary_rows, payloads)
+            message = f"[B]{title}[/B]\n\n{body}"
+            self.client.send_message_to_thread(conversation_url, message)
+            success = f"Sent daily summary test to conversation: {conversation_url}"
+            self._emit(log, success)
+            details.append(success)
+            return DailySummaryResult(
+                summary_date=summary_date,
+                scanned=scan_result.found,
+                topics_selected=len(payloads),
+                status="sent_to_conversation",
+                topic_title=title,
+                topic_url=conversation_url,
+                details=details,
+            )
+        except Exception as exc:
+            error_message = f"Daily summary test failed: {exc}"
+            self._emit(log, error_message)
+            details.append(error_message)
+            return DailySummaryResult(
+                summary_date=summary_date,
+                scanned=scan_result.found,
+                topics_selected=len(topics),
+                status="failed",
+                topic_title=title,
+                topic_url=conversation_url,
                 details=details,
             )
 
