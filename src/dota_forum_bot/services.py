@@ -322,7 +322,7 @@ class ForumSyncService:
         ).strip()
 
     @staticmethod
-    def _clean_summary_table_text(text: str, limit: int = 220) -> str:
+    def _clean_summary_table_text(text: str, limit: int = 170) -> str:
         value = re.sub(r"\s+", " ", (text or "").replace("\r", " ").replace("\n", " ")).strip()
         if not value:
             return "—"
@@ -330,22 +330,153 @@ class ForumSyncService:
             return value
         return value[: limit - 1].rstrip() + "…"
 
+    SUMMARY_CARD_HEADER_COLOR = "#212227"
+    SUMMARY_CARD_BODY_COLOR = "#2a2b30"
+
+    @classmethod
+    def _summary_table_card_color(cls) -> str:
+        return cls.SUMMARY_CARD_BODY_COLOR
+
     @staticmethod
-    def _summary_table_card_color() -> str:
-        base_rgb = (0x26, 0x27, 0x2C)
-        factor = 1 + random.uniform(-0.2, 0.2)
+    def _shift_hex_color(hex_color: str, factor: float) -> str:
+        value = hex_color.lstrip("#")
+        channels = [int(value[index:index + 2], 16) for index in range(0, 6, 2)]
         adjusted = [
             max(0, min(255, int(round(channel * factor))))
-            for channel in base_rgb
+            for channel in channels
         ]
         return "#" + "".join(f"{channel:02x}" for channel in adjusted)
 
     @staticmethod
-    def _summary_table_empty_cell(width: str) -> str:
+    def _summary_table_empty_cell(width: str, padding: str = "0 0 14px 0") -> str:
         return (
-            f'<td style="width: {width}; text-align: center;" '
-            f'data-mce-style="width: {width}; text-align: center;"><br></td>'
+            f'<td style="width: {width}; vertical-align: top; padding: {padding};" '
+            f'data-mce-style="width: {width}; vertical-align: top; padding: {padding};"><br></td>'
         )
+
+    @staticmethod
+    def _summary_section_heading(title: str, subtitle: str | None = None) -> str:
+        body = (
+            f'<p style="margin: 0 0 6px 0;"><b>{html.escape(title)}</b></p>'
+        )
+        if subtitle:
+            body += f'<p style="margin: 0 0 12px 0; color: #b9bcc6;">{html.escape(subtitle)}</p>'
+        return body
+
+    @staticmethod
+    def _split_summary_cards(cards: list[dict[str, object]]) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        if not cards:
+            return [], []
+
+        by_popularity = sorted(
+            cards,
+            key=lambda item: (
+                int(item.get("reply_count") or 0),
+                int(item.get("participant_count") or 0),
+            ),
+            reverse=True,
+        )
+        popular_ids: set[int] = set()
+
+        for card in by_popularity[:4]:
+            if int(card.get("reply_count") or 0) >= 5:
+                popular_ids.add(int(card["topic_id"]))
+
+        if not popular_ids and len(cards) >= 6:
+            fallback = [
+                int(card["topic_id"])
+                for card in by_popularity[:2]
+                if int(card.get("reply_count") or 0) >= 3
+            ]
+            popular_ids.update(fallback)
+
+        popular = [card for card in cards if int(card["topic_id"]) in popular_ids]
+        regular = [card for card in cards if int(card["topic_id"]) not in popular_ids]
+        return popular, regular
+
+    @classmethod
+    def _build_popular_summary_cards(cls, cards: list[dict[str, object]]) -> str:
+        if not cards:
+            return ""
+
+        blocks: list[str] = []
+        for card in cards:
+            header_color = cls.SUMMARY_CARD_HEADER_COLOR
+            background = cls.SUMMARY_CARD_BODY_COLOR
+            meta_color = cls.SUMMARY_CARD_BODY_COLOR
+            border_color = "#1d1e23"
+            summary = cls._clean_summary_table_text(str(card["summary"]), limit=220)
+            reaction = cls._clean_summary_table_text(str(card["reaction"]), limit=220)
+            outcome = cls._clean_summary_table_text(str(card["outcome"]), limit=220)
+            combined = cls._clean_summary_table_text(
+                f"{summary}. {reaction}. {outcome}.",
+                limit=520,
+            )
+            meta_parts = [
+                f"{int(card.get('reply_count') or 0)} ответов",
+                f"{int(card.get('participant_count') or 0)} участников",
+            ]
+            blocks.append(
+                (
+                    '<table style="width: 100%; border-collapse: collapse; margin: 0 0 14px 0;" '
+                    'data-mce-style="width: 100%; border-collapse: collapse;"><tbody>'
+                    f'<tr><td style="padding: 12px 14px; text-align: left; background-color: {header_color};" '
+                    f'data-mce-style="padding: 12px 14px; text-align: left; background-color: {header_color};">'
+                    f'<b><a href="{html.escape(str(card["url"]), quote=True)}" target="_blank" rel="noopener">'
+                    f'{html.escape(str(card["title"]))}</a></b></td></tr>'
+                    f'<tr><td style="padding: 8px 14px; text-align: left; background-color: {meta_color}; '
+                    f'border-top: 1px solid {border_color}; color: #c9ceda;" '
+                    f'data-mce-style="padding: 8px 14px; text-align: left; background-color: {meta_color}; '
+                    f'border-top: 1px solid {border_color}; color: #c9ceda;">'
+                    f'{" • ".join(html.escape(part) for part in meta_parts)}</td></tr>'
+                    f'<tr><td style="padding: 10px 14px; text-align: left; background-color: {background}; '
+                    f'border-top: 1px solid {border_color};" '
+                    f'data-mce-style="padding: 10px 14px; text-align: left; background-color: {background}; '
+                    f'border-top: 1px solid {border_color};">{html.escape(combined)}</td></tr>'
+                    '</tbody></table>'
+                )
+            )
+
+        return "\n".join(blocks)
+
+    @classmethod
+    def _build_regular_summary_cards(cls, cards: list[dict[str, object]]) -> str:
+        if not cards:
+            return ""
+
+        blocks: list[str] = []
+        for card in cards:
+            header_color = cls.SUMMARY_CARD_HEADER_COLOR
+            background = cls.SUMMARY_CARD_BODY_COLOR
+            border_color = "#1d1e23"
+            summary = cls._clean_summary_table_text(str(card["summary"]), limit=130)
+            reaction = cls._clean_summary_table_text(str(card["reaction"]), limit=130)
+            outcome = cls._clean_summary_table_text(str(card["outcome"]), limit=130)
+            blocks.append(
+                (
+                    '<table style="width: 100%; border-collapse: collapse; margin: 0 0 12px 0;" '
+                    'data-mce-style="width: 100%; border-collapse: collapse;"><tbody>'
+                    f'<tr><td style="padding: 11px 14px; text-align: left; background-color: {header_color};" '
+                    f'data-mce-style="padding: 11px 14px; text-align: left; background-color: {header_color};">'
+                    f'<b><a href="{html.escape(str(card["url"]), quote=True)}" target="_blank" rel="noopener">'
+                    f'{html.escape(str(card["title"]))}</a></b></td></tr>'
+                    f'<tr><td style="padding: 8px 14px; text-align: left; background-color: {background}; '
+                    f'border-top: 1px solid {border_color};" '
+                    f'data-mce-style="padding: 8px 14px; text-align: left; background-color: {background}; '
+                    f'border-top: 1px solid {border_color};"><b>О чем:</b> {html.escape(summary)}</td></tr>'
+                    f'<tr><td style="padding: 8px 14px; text-align: left; background-color: {background}; '
+                    f'border-top: 1px solid {border_color};" '
+                    f'data-mce-style="padding: 8px 14px; text-align: left; background-color: {background}; '
+                    f'border-top: 1px solid {border_color};"><b>Что пишут:</b> {html.escape(reaction)}</td></tr>'
+                    f'<tr><td style="padding: 8px 14px; text-align: left; background-color: {background}; '
+                    f'border-top: 1px solid {border_color};" '
+                    f'data-mce-style="padding: 8px 14px; text-align: left; background-color: {background}; '
+                    f'border-top: 1px solid {border_color};"><b>Чем кончилось:</b> {html.escape(outcome)}</td></tr>'
+                    '</tbody></table>'
+                )
+            )
+
+        return "\n".join(blocks)
 
     @classmethod
     def _build_daily_summary_table(
@@ -365,82 +496,38 @@ class ForumSyncService:
                 continue
             cards.append(
                 {
+                    "topic_id": topic_id,
                     "title": str(payload.get("title") or ""),
                     "url": str(payload.get("url") or ""),
                     "summary": cls._clean_summary_table_text(str(row.get("summary") or ""), limit=220),
                     "reaction": cls._clean_summary_table_text(str(row.get("reaction") or ""), limit=220),
                     "outcome": cls._clean_summary_table_text(str(row.get("outcome") or ""), limit=220),
                     "background": cls._summary_table_card_color(),
+                    "reply_count": int(payload.get("reply_count") or 0),
+                    "participant_count": int(payload.get("participant_count") or 0),
                 }
             )
 
         if not cards:
             raise ValueError("No summary cards were built for the daily summary table.")
-
-        width = "33.3333%"
-        chunks = [cards[index:index + 3] for index in range(0, len(cards), 3)]
-        rows_html: list[str] = []
-
-        for chunk_index, chunk in enumerate(chunks):
-            title_cells: list[str] = []
-            summary_cells: list[str] = []
-            reaction_cells: list[str] = []
-            outcome_cells: list[str] = []
-
-            for card in chunk:
-                background = card["background"]
-                title_cells.append(
-                    (
-                        f'<td style="width: {width}; text-align: center; background-color: {background};" '
-                        f'data-mce-style="width: {width}; text-align: center; background-color: {background};">'
-                        f'<a href="{html.escape(card["url"], quote=True)}" target="_blank" rel="noopener">'
-                        f'{html.escape(card["title"])}</a></td>'
-                    )
+        popular_cards, regular_cards = cls._split_summary_cards(cards)
+        sections: list[str] = []
+        if popular_cards:
+            sections.append(
+                cls._summary_section_heading(
+                    "Популярные темы",
+                    "Самые активные треды за сутки: тут чуть больше контекста.",
                 )
-                summary_cells.append(
-                    (
-                        f'<td style="width: {width}; background-color: {background}; text-align: left;" '
-                        f'data-mce-style="width: {width}; background-color: {background}; text-align: left;">'
-                        f'{html.escape(card["summary"])}</td>'
-                    )
-                )
-                reaction_cells.append(
-                    (
-                        f'<td style="width: {width}; background-color: {background}; text-align: left;" '
-                        f'data-mce-style="width: {width}; background-color: {background}; text-align: left;">'
-                        f'{html.escape(card["reaction"])}</td>'
-                    )
-                )
-                outcome_cells.append(
-                    (
-                        f'<td style="width: {width}; background-color: {background}; text-align: left;" '
-                        f'data-mce-style="width: {width}; background-color: {background}; text-align: left;">'
-                        f'{html.escape(card["outcome"])}</td>'
-                    )
-                )
-
-            while len(title_cells) < 3:
-                empty_cell = cls._summary_table_empty_cell(width)
-                title_cells.append(empty_cell)
-                summary_cells.append(empty_cell)
-                reaction_cells.append(empty_cell)
-                outcome_cells.append(empty_cell)
-
-            rows_html.append("<tr>" + "".join(title_cells) + "</tr>")
-            rows_html.append("<tr>" + "".join(summary_cells) + "</tr>")
-            rows_html.append("<tr>" + "".join(reaction_cells) + "</tr>")
-            rows_html.append("<tr>" + "".join(outcome_cells) + "</tr>")
-
-            if chunk_index != len(chunks) - 1:
-                spacer_cells = "".join(cls._summary_table_empty_cell(width) for _ in range(3))
-                rows_html.append("<tr>" + spacer_cells + "</tr>")
-
-        return (
-            '<table style="width: 100%;" data-mce-style="width: 100%;" class="mce-item-table">'
-            "<tbody>"
-            + "".join(rows_html)
-            + "</tbody></table>"
-        )
+            )
+            sections.append(cls._build_popular_summary_cards(popular_cards))
+        if regular_cards:
+            regular_heading = cls._summary_section_heading(
+                "Остальные темы",
+                "Коротко по свежим тредам, которые тоже набрали обсуждение.",
+            )
+            regular_body = cls._build_regular_summary_cards(regular_cards)
+            sections.append(f'[SPOILER="Остальные темы"]\n{regular_heading}\n{regular_body}\n[/SPOILER]')
+        return "\n".join(section for section in sections if section).strip()
 
     @staticmethod
     def _split_summary_spoiler_into_paragraphs(content: str) -> str:
@@ -610,6 +697,11 @@ class ForumSyncService:
             exclude_closed=True,
             limit=50,
         )
+        topics = [
+            topic
+            for topic in topics
+            if not str(topic.get("title") or "").strip().lower().startswith("дайджест - ")
+        ]
         details = [
             (
                 f"Fresh topics for summary: found={len(topics)}, "

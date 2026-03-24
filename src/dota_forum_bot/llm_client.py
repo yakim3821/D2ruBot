@@ -197,13 +197,51 @@ class LLMClient:
         return output_text
 
     @staticmethod
-    def _clean_summary_digest_line(text: str, limit: int = 180) -> str:
-        value = re.sub(r"\s+", " ", (text or "").replace("\r", " ").replace("\n", " ")).strip(" -:;,.")
+    def _clean_summary_digest_line(text: str, limit: int = 220) -> str:
+        value = re.sub(r"\s+", " ", (text or "").replace("\r", " ").replace("\n", " "))
+        value = re.sub(r"^(summary|reaction|outcome)\s*:\s*", "", value, flags=re.IGNORECASE)
+        value = re.sub(r"^[\-\u2022\*]+\s*", "", value)
+        value = value.strip(" -:;,.")
         if not value:
             raise ForumBotError("Daily summary row is missing required content.")
         if len(value) <= limit:
             return value
         return value[: limit - 1].rstrip() + "…"
+
+    @classmethod
+    def _fallback_summary_row(cls, topic_payload: dict[str, object]) -> dict[str, object]:
+        starter_post = cls._clean_summary_digest_line(str(topic_payload.get("starter_post") or "Тема без текста"), limit=160)
+        highlights = topic_payload.get("highlights") or []
+        popular_comments = topic_payload.get("popular_comments") or []
+
+        reaction_source = ""
+        if highlights:
+            first_highlight = highlights[0] or {}
+            reaction_source = str(first_highlight.get("text") or "").strip()
+        if not reaction_source and popular_comments:
+            first_comment = popular_comments[0] or {}
+            reaction_source = str(first_comment.get("text") or "").strip()
+        if not reaction_source:
+            participant_count = int(topic_payload.get("participant_count") or 0)
+            reply_count = int(topic_payload.get("reply_count") or 0)
+            reaction_source = f"В треде {reply_count} ответов и {participant_count} участников"
+
+        outcome_source = ""
+        if popular_comments:
+            first_comment = popular_comments[0] or {}
+            outcome_source = str(first_comment.get("text") or "").strip()
+        if not outcome_source and len(highlights) > 1:
+            last_highlight = highlights[-1] or {}
+            outcome_source = str(last_highlight.get("text") or "").strip()
+        if not outcome_source:
+            outcome_source = "Тема осталась в рамках обычного обсуждения"
+
+        return {
+            "topic_id": int(topic_payload["topic_id"]),
+            "summary": cls._clean_summary_digest_line(starter_post, limit=160),
+            "reaction": cls._clean_summary_digest_line(reaction_source, limit=160),
+            "outcome": cls._clean_summary_digest_line(outcome_source, limit=160),
+        }
 
     def generate_taverna_daily_summary_rows(
         self,
@@ -214,14 +252,17 @@ class LLMClient:
             raise ForumBotError("No topic data was provided for daily summary generation.")
 
         system_prompt = (
-            "Ты готовишь очень короткий табличный дайджест для форума dota2.ru, раздел Таверна. "
-            "Для каждой темы нужны только 3 коротких поля: SUMMARY, REACTION, OUTCOME. "
+            "Ты готовишь очень короткий и живой дайджест для форума dota2.ru, раздел Таверна. "
+            "Для каждой темы нужны только 3 поля: SUMMARY, REACTION, OUTCOME. "
             "Пиши по-русски, естественно, кратко и без канцелярита. "
-            "Каждое поле должно быть одной короткой фразой или одним коротким предложением. "
+            "Для популярных тем можно писать чуть подробнее, для остальных максимально компактно. "
             "Не используй списки, markdown, HTML, BBCode и вступления. "
             "Не повторяй название темы внутри полей. "
             "Не выдумывай факты вне переданных данных. "
-            "Если в теме был срач, рофлы или хейт, передай это коротко и нейтрально."
+            "Если в теме был срач, рофлы или хейт, передай это коротко и нейтрально. "
+            "Поле SUMMARY: о чем тема. "
+            "Поле REACTION: как на нее отреагировали. "
+            "Поле OUTCOME: чем закончился или во что скатился тред."
         )
 
         expected_ids = [int(item["topic_id"]) for item in topics_payload]
@@ -234,6 +275,8 @@ class LLMClient:
             "REACTION: <реакция пользователей>\n"
             "OUTCOME: <итог темы>\n"
             "END_TOPIC\n\n"
+            "Если у темы priority=popular, каждое поле можно делать чуть подробнее, но все равно коротким. "
+            "Если у темы priority=regular, каждое поле должно быть очень компактким.\n\n"
             f"Ожидаемые topic_id: {json.dumps(expected_ids, ensure_ascii=False)}\n\n"
             f"Данные по темам:\n{json.dumps(topics_payload, ensure_ascii=False)}"
         )
@@ -275,11 +318,18 @@ class LLMClient:
 
         rows: list[dict[str, object]] = []
         missing_ids: list[int] = []
+        payload_by_id = {
+            int(item["topic_id"]): item
+            for item in topics_payload
+        }
         for topic_id in expected_ids:
             item = parsed_by_id.get(topic_id)
             if item is None:
-                missing_ids.append(topic_id)
-                continue
+                payload = payload_by_id.get(topic_id)
+                if payload is None:
+                    missing_ids.append(topic_id)
+                    continue
+                item = self._fallback_summary_row(payload)
             rows.append(item)
 
         if missing_ids:
