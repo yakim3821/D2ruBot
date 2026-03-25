@@ -89,9 +89,16 @@ class Dota2ForumClient:
             "Accept": "application/json, text/plain, */*",
         }
 
-    def ensure_authenticated(self, username: str, password: str, remember: bool = True) -> str:
-        if self.load_session() and self.is_authenticated():
-            return "restored"
+    def ensure_authenticated(
+        self,
+        username: str,
+        password: str,
+        remember: bool = True,
+        verify_loaded_session: bool = True,
+    ) -> str:
+        if self.load_session():
+            if not verify_loaded_session or self.is_authenticated():
+                return "restored"
 
         self.login(username, password, remember=remember)
         return "logged_in"

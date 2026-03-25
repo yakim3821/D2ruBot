@@ -586,12 +586,14 @@ def _ensure_authenticated_with_retry(
     settings: Settings,
     command: str,
 ) -> str:
+    verify_loaded_session = command not in WORKER_COMMANDS
     while True:
         try:
             return client.ensure_authenticated(
                 settings.username,
                 settings.password,
                 remember=settings.remember_me,
+                verify_loaded_session=verify_loaded_session,
             )
         except AuthError as exc:
             if command not in WORKER_COMMANDS:
