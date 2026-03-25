@@ -39,6 +39,8 @@ BOT_USER_ID = 847606
 BOT_USERNAME = "Opera Mobile"
 DISPLAY_TIMEZONE = ZoneInfo("Europe/Moscow")
 BOT_AUTHORED_SKIP_REASON = "bot_authored_topic"
+AUTO_REPLY_FAILURE_SKIP_REASON = "auto_reply_failed"
+AUTO_REPLY_FAILURE_LIMIT = 3
 AVATAR_IMAGES_DIR = Path(__file__).resolve().parents[2] / "src" / "img"
 
 
@@ -1395,6 +1397,7 @@ class ForumSyncService:
             max_age_days=max_age_days,
             limit=limit,
             excluded_author_user_id=BOT_USER_ID,
+            max_failures=AUTO_REPLY_FAILURE_LIMIT,
         )
         style_profile = self.db.get_user_style_profile(BOT_USER_ID)
         if style_profile is None:
@@ -1491,6 +1494,16 @@ class ForumSyncService:
                 error_message = f"  Publish failed: {exc}"
                 details.append(error_message)
                 self._emit(log, error_message)
+                failure_count = self.db.count_topic_auto_reply_failures(forum_topic_id)
+                if failure_count >= AUTO_REPLY_FAILURE_LIMIT:
+                    skip_reason = f"{AUTO_REPLY_FAILURE_SKIP_REASON}:{failure_count}"
+                    self.db.mark_topic_auto_reply_failed(forum_topic_id, skip_reason)
+                    skip_message = (
+                        "  Topic marked as failed for auto-reply after "
+                        f"{failure_count} attempts."
+                    )
+                    details.append(skip_message)
+                    self._emit(log, skip_message)
                 time.sleep(10)
             except Exception as exc:
                 self.db.add_bot_reply(
@@ -1505,6 +1518,16 @@ class ForumSyncService:
                 error_message = f"  Topic processing failed: {exc}"
                 details.append(error_message)
                 self._emit(log, error_message)
+                failure_count = self.db.count_topic_auto_reply_failures(forum_topic_id)
+                if failure_count >= AUTO_REPLY_FAILURE_LIMIT:
+                    skip_reason = f"{AUTO_REPLY_FAILURE_SKIP_REASON}:{failure_count}"
+                    self.db.mark_topic_auto_reply_failed(forum_topic_id, skip_reason)
+                    skip_message = (
+                        "  Topic marked as failed for auto-reply after "
+                        f"{failure_count} attempts."
+                    )
+                    details.append(skip_message)
+                    self._emit(log, skip_message)
 
         return AutoReplyResult(
             scanned=scan_result.found,

@@ -447,6 +447,7 @@ class Database:
         max_age_days: int = 3,
         limit: int = 20,
         excluded_author_user_id: int | None = None,
+        max_failures: int = 3,
     ) -> list[dict[str, Any]]:
         filters = [
             "t.bot_replied_once = FALSE",
@@ -455,8 +456,16 @@ class Database:
             "COALESCE(t.created_at_forum, t.first_seen_at) >= NOW() - (%s * INTERVAL '1 day')",
             "t.reply_not_before IS NOT NULL",
             "t.reply_not_before <= NOW()",
+            "t.reply_skip_reason IS NULL",
+            """(
+                SELECT count(*)
+                FROM bot_replies br
+                WHERE br.forum_topic_id = t.forum_topic_id
+                  AND br.target_type = 'topic'
+                  AND br.status = 'llm_auto_failed'
+            ) < %s""",
         ]
-        params: list[Any] = [max_age_days]
+        params: list[Any] = [max_age_days, max_failures]
         if excluded_author_user_id is not None:
             filters.append("(t.author_user_id IS NULL OR t.author_user_id <> %s)")
             params.append(excluded_author_user_id)
@@ -691,6 +700,28 @@ class Database:
                 error_message,
             ),
         )
+
+    def count_topic_auto_reply_failures(self, forum_topic_id: int) -> int:
+        sql = """
+        SELECT count(*) AS failure_count
+        FROM bot_replies
+        WHERE forum_topic_id = %s
+          AND target_type = 'topic'
+          AND status = 'llm_auto_failed'
+        """
+        rows = self._fetch_all(sql, (forum_topic_id,))
+        if not rows:
+            return 0
+        return int(rows[0]["failure_count"] or 0)
+
+    def mark_topic_auto_reply_failed(self, forum_topic_id: int, skip_reason: str) -> None:
+        sql = """
+        UPDATE topics
+        SET reply_not_before = NULL,
+            reply_skip_reason = %s
+        WHERE forum_topic_id = %s
+        """
+        self._execute(sql, (skip_reason, forum_topic_id))
 
     def get_latest_draft_for_topic(self, forum_topic_id: int) -> dict[str, Any] | None:
         sql = """
