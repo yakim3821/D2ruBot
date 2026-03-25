@@ -1046,6 +1046,10 @@ class ForumSyncService:
             if reply_not_before > now:
                 reasons.append("not_due_yet")
 
+        failure_count = self.db.count_topic_auto_reply_failures(topic["forum_topic_id"])
+        if failure_count >= AUTO_REPLY_FAILURE_LIMIT:
+            reasons.append(f"{AUTO_REPLY_FAILURE_SKIP_REASON}:{failure_count}")
+
         return (len(reasons) == 0, reasons)
 
     def scan_taverna(self) -> ScanResult:

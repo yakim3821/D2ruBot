@@ -60,6 +60,12 @@
     ]
   }
 }</component>
+  <component name="RecentsManager">
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="F:\DotaForumBot" />
+      <recent name="F:\DotaForumBot\src" />
+    </key>
+  </component>
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
@@ -82,7 +88,7 @@
       <workItem from="1774256825219" duration="9827000" />
       <workItem from="1774361222883" duration="2652000" />
       <workItem from="1774382697819" duration="8195000" />
-      <workItem from="1774451223797" duration="806000" />
+      <workItem from="1774451223797" duration="1769000" />
     </task>
     <task id="LOCAL-00001" summary="Start">
       <option name="closed" value="true" />
@@ -308,7 +314,15 @@
       <option name="project" value="LOCAL" />
       <updated>1774451762146</updated>
     </task>
-    <option name="localTasksCounter" value="29" />
+    <task id="LOCAL-00029" summary="фикс">
+      <option name="closed" value="true" />
+      <created>1774452130069</created>
+      <option name="number" value="00029" />
+      <option name="presentableId" value="LOCAL-00029" />
+      <option name="project" value="LOCAL" />
+      <updated>1774452130069</updated>
+    </task>
+    <option name="localTasksCounter" value="30" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
