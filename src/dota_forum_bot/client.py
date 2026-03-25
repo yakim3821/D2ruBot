@@ -124,7 +124,14 @@ class Dota2ForumClient:
         try:
             data = json.loads(response.text)
         except json.JSONDecodeError as exc:
-            raise AuthError(f"Login response is not valid JSON: {response.text[:300]}") from exc
+            snippet = response.text[:300]
+            normalized = snippet.lower()
+            if "<html" in normalized:
+                raise AuthError(
+                    "Login returned HTML instead of JSON. The forum likely served an anti-bot/challenge page "
+                    f"instead of the auth API response: {snippet}"
+                ) from exc
+            raise AuthError(f"Login response is not valid JSON: {snippet}") from exc
 
         status = data.get("status")
         if status != "success":

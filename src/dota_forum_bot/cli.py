@@ -2,15 +2,26 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from datetime import datetime, timezone
 
 from .client import Dota2ForumClient
 from .config import Settings
 from .db import Database
-from .exceptions import ForumBotError
+from .exceptions import AuthError, ForumBotError
 from .llm_client import LLMClient
 from .services import BOT_USER_ID, DISPLAY_TIMEZONE, ForumSyncService
 from .ui import run_ui_server
+
+
+WORKER_COMMANDS = {
+    "run-auto-reply-worker",
+    "run-quote-reply-worker",
+    "run-daily-summary-worker",
+    "run-daily-topic-worker",
+    "run-daily-avatar-worker",
+}
+WORKER_AUTH_RETRY_SECONDS = 60
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -242,11 +253,7 @@ def main() -> int:
     service = ForumSyncService(client=client, db=db)
 
     try:
-        auth_mode = client.ensure_authenticated(
-            settings.username,
-            settings.password,
-            remember=settings.remember_me,
-        )
+        auth_mode = _ensure_authenticated_with_retry(client, settings, args.command)
         if auth_mode == "restored":
             print(f"Session restored from {settings.session_file}. Session is authenticated.")
         else:
@@ -572,6 +579,30 @@ def main() -> int:
     except KeyboardInterrupt:
         print("Stopped by user.")
         return 0
+
+
+def _ensure_authenticated_with_retry(
+    client: Dota2ForumClient,
+    settings: Settings,
+    command: str,
+) -> str:
+    while True:
+        try:
+            return client.ensure_authenticated(
+                settings.username,
+                settings.password,
+                remember=settings.remember_me,
+            )
+        except AuthError as exc:
+            if command not in WORKER_COMMANDS:
+                raise
+            print(f"ERROR: {exc}", file=sys.stderr)
+            print(
+                "Authentication failed during worker startup. "
+                f"Retrying in {WORKER_AUTH_RETRY_SECONDS} seconds.",
+                file=sys.stderr,
+            )
+            time.sleep(WORKER_AUTH_RETRY_SECONDS)
 
 
 if __name__ == "__main__":
