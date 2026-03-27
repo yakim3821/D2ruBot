@@ -41,6 +41,9 @@ DISPLAY_TIMEZONE = ZoneInfo("Europe/Moscow")
 BOT_AUTHORED_SKIP_REASON = "bot_authored_topic"
 AUTO_REPLY_FAILURE_SKIP_REASON = "auto_reply_failed"
 AUTO_REPLY_FAILURE_LIMIT = 3
+NO_AUTO_REPLY_RULE_MATCHED_REASON = "no_auto_reply_rule_matched"
+LONG_TOPIC_GIF_THRESHOLD = 3000
+LONG_TOPIC_GIF_BBCODE = "[IMG]https://media1.tenor.com/m/2QnubFuRdRgAAAAd/papich.gif[/IMG]"
 AVATAR_IMAGES_DIR = Path(__file__).resolve().parents[2] / "src" / "img"
 
 
@@ -180,16 +183,6 @@ class ForumSyncService:
         return random.randint(minimum, maximum)
 
     @staticmethod
-    def _human_reply_delay_minutes(reply_count: int | None) -> int:
-        if reply_count is None:
-            return random.randint(20, 60)
-        if reply_count <= 2:
-            return random.randint(30, 90)
-        if reply_count <= 5:
-            return random.randint(10, 30)
-        return random.randint(3, 10)
-
-    @staticmethod
     def _format_dt(value) -> str:
         if value is None:
             return "None"
@@ -219,6 +212,14 @@ class ForumSyncService:
         if len(text) <= limit:
             return text
         return text[: limit - 1].rstrip() + "…"
+
+    @staticmethod
+    def _build_auto_reply_for_topic(topic_title: str, topic_text: str) -> tuple[str | None, str]:
+        del topic_title
+        content_length = len(topic_text or "")
+        if content_length > LONG_TOPIC_GIF_THRESHOLD:
+            return LONG_TOPIC_GIF_BBCODE, f"topic_length_gt_{LONG_TOPIC_GIF_THRESHOLD}:gif"
+        return None, NO_AUTO_REPLY_RULE_MATCHED_REASON
 
     @staticmethod
     def _looks_like_bot_accusation(user_message_text: str) -> bool:
@@ -1074,12 +1075,11 @@ class ForumSyncService:
                     f"Skipped auto-reply for bot-authored topic {topic.forum_topic_id}.",
                 )
             elif not exists or self.db.topic_needs_reply_schedule(topic.forum_topic_id):
-                delay_minutes = self._human_reply_delay_minutes(topic.forum_reply_count)
-                reply_not_before = datetime.now(timezone.utc) + timedelta(minutes=delay_minutes)
+                reply_not_before = datetime.now(timezone.utc)
                 self.db.set_topic_reply_schedule(topic.forum_topic_id, reply_not_before, reply_skip_reason=None)
                 self._emit(
                     log if 'log' in locals() else None,
-                    f"Scheduled topic {topic.forum_topic_id} reply after {delay_minutes} minutes "
+                    f"Scheduled topic {topic.forum_topic_id} reply immediately "
                     f"(reply_count={topic.forum_reply_count}, not_before={self._format_dt(reply_not_before)})",
                 )
             changed += 1
@@ -1388,9 +1388,8 @@ class ForumSyncService:
 
         return LLMPublishResult(processed=processed, published=published, failed=failed)
 
-    def auto_reply_recent_topics_with_llm(
+    def auto_reply_recent_topics(
         self,
-        llm: LLMClient,
         max_age_days: int = 3,
         limit: int = 5,
         log=None,
@@ -1403,9 +1402,6 @@ class ForumSyncService:
             excluded_author_user_id=BOT_USER_ID,
             max_failures=AUTO_REPLY_FAILURE_LIMIT,
         )
-        style_profile = self.db.get_user_style_profile(BOT_USER_ID)
-        if style_profile is None:
-            raise ValueError("Bot style profile is not built yet. Run build-yakim-profile first.")
 
         processed = 0
         published = 0
@@ -1464,19 +1460,32 @@ class ForumSyncService:
                 if topic_data is None:
                     raise ValueError(f"Topic {forum_topic_id} was not found after sync.")
 
-                reply_text = llm.generate_forum_reply(
+                reply_text, rule_name = self._build_auto_reply_for_topic(
                     topic_title=topic_data["title"],
                     topic_text=topic_data.get("content_text") or "",
-                    style_profile=style_profile,
                 )
-                self._emit(log, f"  LLM reply generated: {len(reply_text)} chars")
+                if not reply_text:
+                    self.db.set_topic_reply_schedule(
+                        forum_topic_id,
+                        reply_not_before=None,
+                        reply_skip_reason=rule_name,
+                    )
+                    skip_message = f"  No auto-reply rule matched, topic skipped: {rule_name}."
+                    details.append(skip_message)
+                    self._emit(log, skip_message)
+                    continue
+
+                self._emit(
+                    log,
+                    f"  Auto-reply prepared by rule `{rule_name}`: {len(reply_text)} chars"
+                )
                 self.client.send_message_to_thread(topic_url, reply_text)
                 self.db.add_bot_reply(
                     forum_topic_id=forum_topic_id,
                     target_type="topic",
                     target_url=topic_url,
                     reply_text=reply_text,
-                    status="llm_auto_published",
+                    status="auto_published",
                     forum_post_id=topic_data.get("forum_post_id"),
                 )
                 self.db.mark_topic_replied(forum_topic_id)
@@ -1484,14 +1493,13 @@ class ForumSyncService:
                 success_message = "  Published successfully and marked as replied."
                 details.append(success_message)
                 self._emit(log, success_message)
-                time.sleep(10)
             except MessageSendError as exc:
                 self.db.add_bot_reply(
                     forum_topic_id=forum_topic_id,
                     target_type="topic",
                     target_url=topic_url,
                     reply_text="",
-                    status="llm_auto_failed",
+                    status="auto_failed",
                     error_message=str(exc),
                 )
                 failed += 1
@@ -1508,14 +1516,13 @@ class ForumSyncService:
                     )
                     details.append(skip_message)
                     self._emit(log, skip_message)
-                time.sleep(10)
             except Exception as exc:
                 self.db.add_bot_reply(
                     forum_topic_id=forum_topic_id,
                     target_type="topic",
                     target_url=topic_url,
                     reply_text="",
-                    status="llm_auto_failed",
+                    status="auto_failed",
                     error_message=str(exc),
                 )
                 failed += 1
@@ -1543,7 +1550,6 @@ class ForumSyncService:
 
     def run_auto_reply_worker(
         self,
-        llm: LLMClient,
         poll_interval_seconds: int = 30,
         max_age_days: int = 3,
         batch_limit: int = 5,
@@ -1567,8 +1573,7 @@ class ForumSyncService:
                     f"Cycle #{cycle} started: interval={self.WORKER_MIN_SLEEP_SECONDS}-{self.WORKER_MAX_SLEEP_SECONDS}s, "
                     f"max_age_days={max_age_days}, batch_limit={batch_limit}"
                 )
-                result = self.auto_reply_recent_topics_with_llm(
-                    llm=llm,
+                result = self.auto_reply_recent_topics(
                     max_age_days=max_age_days,
                     limit=batch_limit,
                     log=log,

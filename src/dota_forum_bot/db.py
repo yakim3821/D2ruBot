@@ -212,7 +212,7 @@ class Database:
                   AND reply_not_before > NOW()
             ) AS topics_waiting_delay,
             (SELECT count(*) FROM bot_replies) AS bot_replies_total,
-            (SELECT count(*) FROM bot_replies WHERE status = 'llm_auto_published') AS bot_auto_published
+            (SELECT count(*) FROM bot_replies WHERE status IN ('llm_auto_published', 'auto_published')) AS bot_auto_published
         """
         rows = self._fetch_all(sql, ())
         return rows[0] if rows else {}
@@ -462,7 +462,7 @@ class Database:
                 FROM bot_replies br
                 WHERE br.forum_topic_id = t.forum_topic_id
                   AND br.target_type = 'topic'
-                  AND br.status = 'llm_auto_failed'
+                  AND br.status IN ('llm_auto_failed', 'auto_failed')
             ) < %s""",
         ]
         params: list[Any] = [max_age_days, max_failures]
@@ -707,7 +707,7 @@ class Database:
         FROM bot_replies
         WHERE forum_topic_id = %s
           AND target_type = 'topic'
-          AND status = 'llm_auto_failed'
+          AND status IN ('llm_auto_failed', 'auto_failed')
         """
         rows = self._fetch_all(sql, (forum_topic_id,))
         if not rows:
