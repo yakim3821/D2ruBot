@@ -223,10 +223,10 @@ def parse_topic_page(topic_url: str, topic_html: str) -> TopicPageRecord:
 
     title = _extract_meta_title(topic_html) or _extract_html_title(topic_html) or f"Topic {topic_id}"
     author = _extract_first_user(topic_html)
-
-    post_id = _extract_first_post_id(topic_html)
+    first_post_block = _extract_first_topic_post_block(topic_html) or topic_html
+    post_id = _extract_first_post_id(first_post_block)
     post_url = f"https://dota2.ru/forum/posts/{post_id}/" if post_id is not None else None
-    content_raw = _extract_first_post_html(topic_html)
+    content_raw = _extract_post_content_html(first_post_block)
     content_text = _html_to_text(content_raw)
 
     topic = TopicRecord(
@@ -820,6 +820,11 @@ def _extract_topic_post_blocks(html_text: str) -> list[str]:
         end = starts[index + 1].start() if index + 1 < len(starts) else len(html_text)
         blocks.append(html_text[start:end])
     return blocks
+
+
+def _extract_first_topic_post_block(html_text: str) -> str | None:
+    blocks = _extract_topic_post_blocks(html_text)
+    return blocks[0] if blocks else None
 
 
 def _extract_author_from_post_block(block: str) -> ForumUserRecord | None:

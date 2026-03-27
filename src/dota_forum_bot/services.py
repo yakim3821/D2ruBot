@@ -42,7 +42,7 @@ BOT_AUTHORED_SKIP_REASON = "bot_authored_topic"
 AUTO_REPLY_FAILURE_SKIP_REASON = "auto_reply_failed"
 AUTO_REPLY_FAILURE_LIMIT = 3
 NO_AUTO_REPLY_RULE_MATCHED_REASON = "no_auto_reply_rule_matched"
-LONG_TOPIC_GIF_THRESHOLD = 3000
+LONG_TOPIC_GIF_THRESHOLD = 4000
 LONG_TOPIC_GIF_BBCODE = "[IMG]https://media1.tenor.com/m/2QnubFuRdRgAAAAd/papich.gif[/IMG]"
 AVATAR_IMAGES_DIR = Path(__file__).resolve().parents[2] / "src" / "img"
 
@@ -1460,9 +1460,10 @@ class ForumSyncService:
                 if topic_data is None:
                     raise ValueError(f"Topic {forum_topic_id} was not found after sync.")
 
+                topic_text = extract_post_message_text(topic_data.get("content_raw") or "") or (topic_data.get("content_text") or "")
                 reply_text, rule_name = self._build_auto_reply_for_topic(
                     topic_title=topic_data["title"],
-                    topic_text=topic_data.get("content_text") or "",
+                    topic_text=topic_text,
                 )
                 if not reply_text:
                     self.db.set_topic_reply_schedule(
