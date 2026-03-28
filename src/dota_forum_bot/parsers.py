@@ -12,6 +12,10 @@ from typing import Iterable
 THREAD_URL_RE = re.compile(r"(?:https://dota2\.ru)?/forum/threads/[^\"'?#\s>]+?\.(\d+)(?:/|\?action=unread)?")
 MEMBER_URL_RE = re.compile(r"/forum/members/[^\"'?#\s>]+?\.(\d+)/?")
 POST_URL_RE = re.compile(r"/forum/posts/(\d+)/")
+TOPIC_POST_BLOCK_RE = re.compile(
+    r'<div\b(?=[^>]*\bid="post-(\d+)")(?=[^>]*\bclass="[^"]*forum-theme__item[^"]*")[^>]*>',
+    flags=re.IGNORECASE,
+)
 
 
 @dataclass
@@ -223,7 +227,7 @@ def parse_topic_page(topic_url: str, topic_html: str) -> TopicPageRecord:
 
     title = _extract_meta_title(topic_html) or _extract_html_title(topic_html) or f"Topic {topic_id}"
     author = _extract_first_user(topic_html)
-    first_post_block = _extract_first_topic_post_block(topic_html) or topic_html
+    first_post_block = _extract_first_topic_post_block(topic_html)
     post_id = _extract_first_post_id(first_post_block)
     post_url = f"https://dota2.ru/forum/posts/{post_id}/" if post_id is not None else None
     content_raw = _extract_post_content_html(first_post_block)
@@ -611,6 +615,9 @@ def _extract_topic_reply_count(block: str) -> int | None:
 
 
 def _extract_first_post_id(html_text: str) -> int | None:
+    if not html_text:
+        return None
+
     match = re.search(r'id="post-(\d+)"', html_text)
     if match:
         return int(match.group(1))
@@ -813,7 +820,7 @@ def _extract_topic_thread_posts(topic_id: int, html_text: str) -> list[TopicThre
 
 
 def _extract_topic_post_blocks(html_text: str) -> list[str]:
-    starts = list(re.finditer(r'<div id="post-(\d+)"[^>]*class="[^"]*forum-theme__item[^"]*"', html_text))
+    starts = list(TOPIC_POST_BLOCK_RE.finditer(html_text))
     blocks: list[str] = []
     for index, match in enumerate(starts):
         start = match.start()
@@ -873,6 +880,9 @@ def _extract_post_number(block: str) -> int | None:
 
 
 def _extract_post_content_html(block: str) -> str:
+    if not block:
+        return ""
+
     extracted = _extract_message_text_html(block)
     if extracted:
         return extracted
