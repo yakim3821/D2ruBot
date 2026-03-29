@@ -45,7 +45,7 @@ NO_AUTO_REPLY_RULE_MATCHED_REASON = "no_auto_reply_rule_matched"
 LONG_TOPIC_GIF_THRESHOLD = 4000
 LONG_TOPIC_GIF_BBCODE = "[IMG]https://media1.tenor.com/m/2QnubFuRdRgAAAAd/papich.gif[/IMG]"
 BURNING_AUTHOR_SCORE_THRESHOLD = 7
-BURNING_AUTHOR_IMAGE_BBCODE = "[IMG]https://i.ibb.co/fdtxvP05/image.png[/IMG]"
+BURNING_AUTHOR_IMAGE_BBCODE = "[IMG]https://i.ibb.co/NdrBL88F/image.png[/IMG]"
 AVATAR_IMAGES_DIR = Path(__file__).resolve().parents[2] / "src" / "img"
 
 
