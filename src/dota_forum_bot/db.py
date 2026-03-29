@@ -398,7 +398,7 @@ class Database:
 
     def topic_needs_reply_schedule(self, forum_topic_id: int) -> bool:
         sql = """
-        SELECT reply_not_before
+        SELECT reply_not_before, reply_skip_reason
         FROM topics
         WHERE forum_topic_id = %s
         LIMIT 1
@@ -406,6 +406,8 @@ class Database:
         rows = self._fetch_all(sql, (forum_topic_id,))
         if not rows:
             return True
+        if rows[0]["reply_skip_reason"] is not None:
+            return False
         return rows[0]["reply_not_before"] is None
 
     def get_topics_pending_draft(self, limit: int = 20) -> list[dict[str, Any]]:
