@@ -127,6 +127,42 @@ class LLMClient:
             raise ForumBotError("DeepSeek returned an empty quote reply.")
         return output_text
 
+    def assess_author_burn(self, topic_title: str, starter_post_text: str) -> int:
+        system_prompt = (
+            "You analyze the emotional intensity of forum posts on dota2.ru. "
+            "Estimate how much the author is burning, raging, or tilted. "
+            "Use a scale from 1 to 10 where 1 means calm/neutral and 10 means maximum visible burn. "
+            "Return only one integer from 1 to 10 with no explanation."
+        )
+
+        user_prompt = (
+            f"Topic title:\n{topic_title}\n\n"
+            f"Author starter post:\n{starter_post_text}\n\n"
+            "Return only one integer from 1 to 10."
+        )
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=10,
+            temperature=0.1,
+        )
+
+        output_text = ""
+        if response.choices:
+            message = response.choices[0].message
+            output_text = (message.content or "").strip()
+        if not output_text:
+            raise ForumBotError("DeepSeek returned an empty burn score.")
+
+        match = re.search(r"\b(10|[1-9])\b", output_text)
+        if not match:
+            raise ForumBotError(f"DeepSeek returned an invalid burn score: {output_text!r}")
+        return int(match.group(1))
+
     def has_explicit_question(
         self,
         topic_title: str,

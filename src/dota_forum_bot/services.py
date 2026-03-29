@@ -44,6 +44,8 @@ AUTO_REPLY_FAILURE_LIMIT = 3
 NO_AUTO_REPLY_RULE_MATCHED_REASON = "no_auto_reply_rule_matched"
 LONG_TOPIC_GIF_THRESHOLD = 4000
 LONG_TOPIC_GIF_BBCODE = "[IMG]https://media1.tenor.com/m/2QnubFuRdRgAAAAd/papich.gif[/IMG]"
+BURNING_AUTHOR_SCORE_THRESHOLD = 7
+BURNING_AUTHOR_IMAGE_BBCODE = "[IMG]https://i.ibb.co/fdtxvP05/image.png[/IMG]"
 AVATAR_IMAGES_DIR = Path(__file__).resolve().parents[2] / "src" / "img"
 
 
@@ -213,13 +215,24 @@ class ForumSyncService:
             return text
         return text[: limit - 1].rstrip() + "…"
 
-    @staticmethod
-    def _build_auto_reply_for_topic(topic_title: str, topic_text: str) -> tuple[str | None, str]:
-        del topic_title
+    def _build_auto_reply_for_topic(
+        self,
+        llm: LLMClient,
+        topic_title: str,
+        topic_text: str,
+    ) -> tuple[str | None, str, int]:
+        burn_score = llm.assess_author_burn(topic_title=topic_title, starter_post_text=topic_text)
+        if burn_score > BURNING_AUTHOR_SCORE_THRESHOLD:
+            return (
+                BURNING_AUTHOR_IMAGE_BBCODE,
+                f"author_burn_gt_{BURNING_AUTHOR_SCORE_THRESHOLD}:{burn_score}",
+                burn_score,
+            )
+
         content_length = len(topic_text or "")
         if content_length > LONG_TOPIC_GIF_THRESHOLD:
-            return LONG_TOPIC_GIF_BBCODE, f"topic_length_gt_{LONG_TOPIC_GIF_THRESHOLD}:gif"
-        return None, NO_AUTO_REPLY_RULE_MATCHED_REASON
+            return LONG_TOPIC_GIF_BBCODE, f"topic_length_gt_{LONG_TOPIC_GIF_THRESHOLD}:gif", burn_score
+        return None, NO_AUTO_REPLY_RULE_MATCHED_REASON, burn_score
 
     @staticmethod
     def _looks_like_bot_accusation(user_message_text: str) -> bool:
@@ -1390,6 +1403,7 @@ class ForumSyncService:
 
     def auto_reply_recent_topics(
         self,
+        llm: LLMClient,
         max_age_days: int = 3,
         limit: int = 5,
         log=None,
@@ -1461,7 +1475,8 @@ class ForumSyncService:
                     raise ValueError(f"Topic {forum_topic_id} was not found after sync.")
 
                 topic_text = extract_post_message_text(topic_data.get("content_raw") or "") or (topic_data.get("content_text") or "")
-                reply_text, rule_name = self._build_auto_reply_for_topic(
+                reply_text, rule_name, burn_score = self._build_auto_reply_for_topic(
+                    llm=llm,
                     topic_title=topic_data["title"],
                     topic_text=topic_text,
                 )
@@ -1471,14 +1486,17 @@ class ForumSyncService:
                         reply_not_before=None,
                         reply_skip_reason=rule_name,
                     )
-                    skip_message = f"  No auto-reply rule matched, topic skipped: {rule_name}."
+                    skip_message = (
+                        f"  No auto-reply rule matched, topic skipped: {rule_name}, "
+                        f"burn_score={burn_score}."
+                    )
                     details.append(skip_message)
                     self._emit(log, skip_message)
                     continue
 
                 self._emit(
                     log,
-                    f"  Auto-reply prepared by rule `{rule_name}`: {len(reply_text)} chars"
+                    f"  Auto-reply prepared by rule `{rule_name}`: burn_score={burn_score}, {len(reply_text)} chars"
                 )
                 self.client.send_message_to_thread(topic_url, reply_text)
                 self.db.add_bot_reply(
@@ -1551,6 +1569,7 @@ class ForumSyncService:
 
     def run_auto_reply_worker(
         self,
+        llm: LLMClient,
         poll_interval_seconds: int = 30,
         max_age_days: int = 3,
         batch_limit: int = 5,
@@ -1575,6 +1594,7 @@ class ForumSyncService:
                     f"max_age_days={max_age_days}, batch_limit={batch_limit}"
                 )
                 result = self.auto_reply_recent_topics(
+                    llm=llm,
                     max_age_days=max_age_days,
                     limit=batch_limit,
                     log=log,

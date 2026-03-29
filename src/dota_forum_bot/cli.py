@@ -339,11 +339,17 @@ def main() -> int:
                 f"published={result.published}, failed={result.failed}"
             )
         elif args.command == "run-auto-reply-worker":
+            llm = LLMClient(
+                api_key=settings.deepseek_api_key,
+                model=settings.deepseek_model,
+                base_url=settings.deepseek_base_url,
+            )
             print(
                 f"Auto-reply worker started: interval={args.interval}s, "
                 f"max_age_days={args.max_age_days}, batch_limit={args.batch_limit}"
             )
             service.run_auto_reply_worker(
+                llm=llm,
                 poll_interval_seconds=args.interval,
                 max_age_days=args.max_age_days,
                 batch_limit=args.batch_limit,
