@@ -1474,7 +1474,7 @@ class ForumSyncService:
                 if topic_data is None:
                     raise ValueError(f"Topic {forum_topic_id} was not found after sync.")
 
-                topic_text = extract_post_message_text(topic_data.get("content_raw") or "") or (topic_data.get("content_text") or "")
+                topic_text = topic_data.get("content_text") or ""
                 reply_text, rule_name, burn_score = self._build_auto_reply_for_topic(
                     llm=llm,
                     topic_title=topic_data["title"],
@@ -1496,7 +1496,9 @@ class ForumSyncService:
 
                 self._emit(
                     log,
-                    f"  Auto-reply prepared by rule `{rule_name}`: burn_score={burn_score}, {len(reply_text)} chars"
+                    "  "
+                    f"Auto-reply prepared by rule `{rule_name}`: "
+                    f"topic_text_len={len(topic_text)}, burn_score={burn_score}, {len(reply_text)} chars"
                 )
                 self.client.send_message_to_thread(topic_url, reply_text)
                 self.db.add_bot_reply(

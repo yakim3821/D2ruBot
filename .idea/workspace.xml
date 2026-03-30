@@ -4,7 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="63386f1a-d5f6-4c51-aa31-f06c006e8555" name="Changes" comment="new version">
+    <list default="true" id="63386f1a-d5f6-4c51-aa31-f06c006e8555" name="Changes" comment="ai анализ на печет дупу">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -94,7 +94,9 @@
       <workItem from="1774451223797" duration="5533000" />
       <workItem from="1774642794384" duration="3517000" />
       <workItem from="1774694195716" duration="5754000" />
-      <workItem from="1774785118230" duration="1044000" />
+      <workItem from="1774785118230" duration="5758000" />
+      <workItem from="1774878454256" duration="597000" />
+      <workItem from="1774891829062" duration="675000" />
     </task>
     <task id="LOCAL-00001" summary="Start">
       <option name="closed" value="true" />
@@ -360,7 +362,31 @@
       <option name="project" value="LOCAL" />
       <updated>1774694733429</updated>
     </task>
-    <option name="localTasksCounter" value="34" />
+    <task id="LOCAL-00034" summary="ai анализ на печет дупу">
+      <option name="closed" value="true" />
+      <created>1774786423209</created>
+      <option name="number" value="00034" />
+      <option name="presentableId" value="LOCAL-00034" />
+      <option name="project" value="LOCAL" />
+      <updated>1774786423209</updated>
+    </task>
+    <task id="LOCAL-00035" summary="ai анализ на печет дупу">
+      <option name="closed" value="true" />
+      <created>1774786882454</created>
+      <option name="number" value="00035" />
+      <option name="presentableId" value="LOCAL-00035" />
+      <option name="project" value="LOCAL" />
+      <updated>1774786882454</updated>
+    </task>
+    <task id="LOCAL-00036" summary="ai анализ на печет дупу">
+      <option name="closed" value="true" />
+      <created>1774788382864</created>
+      <option name="number" value="00036" />
+      <option name="presentableId" value="LOCAL-00036" />
+      <option name="project" value="LOCAL" />
+      <updated>1774788382864</updated>
+    </task>
+    <option name="localTasksCounter" value="37" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -396,6 +422,7 @@
     <MESSAGE value="дайджест в новом формате" />
     <MESSAGE value="фикс" />
     <MESSAGE value="new version" />
-    <option name="LAST_COMMIT_MESSAGE" value="new version" />
+    <MESSAGE value="ai анализ на печет дупу" />
+    <option name="LAST_COMMIT_MESSAGE" value="ai анализ на печет дупу" />
   </component>
 </project>

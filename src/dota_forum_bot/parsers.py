@@ -231,7 +231,7 @@ def parse_topic_page(topic_url: str, topic_html: str) -> TopicPageRecord:
     post_id = _extract_first_post_id(first_post_block)
     post_url = f"https://dota2.ru/forum/posts/{post_id}/" if post_id is not None else None
     content_raw = _extract_post_content_html(first_post_block)
-    content_text = _html_to_text(content_raw)
+    content_text = extract_post_message_text(content_raw)
 
     topic = TopicRecord(
         forum_topic_id=topic_id,
@@ -795,7 +795,7 @@ def _extract_topic_thread_posts(topic_id: int, html_text: str) -> list[TopicThre
         post_url = _extract_post_url(block)
         post_number = _extract_post_number(block)
         content_raw = _extract_post_content_html(block)
-        content_text = _html_to_text(content_raw)
+        content_text = extract_post_message_text(content_raw)
         reactions = _extract_post_reactions(block)
 
         posts.append(
