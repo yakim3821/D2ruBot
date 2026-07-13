@@ -59,6 +59,14 @@ class ScanResult:
 
 
 @dataclass
+class StarterPostSyncResult:
+    selected: int
+    synced: int
+    failed: int
+    details: list[str] = field(default_factory=list)
+
+
+@dataclass
 class DraftResult:
     processed: int
     sent: int
@@ -1154,6 +1162,72 @@ class ForumSyncService:
         self.db.upsert_post(topic_page.first_post)
         self.db.update_scan_state(TAVERNA_SCOPE, topic_id=topic_page.topic.forum_topic_id, post_id=topic_page.first_post.forum_post_id)
         return topic_page
+
+    def sync_missing_starter_posts(self, limit: int = 20) -> StarterPostSyncResult:
+        topics = self.db.get_topics_missing_starter_posts(limit=limit)
+        synced = 0
+        failed = 0
+        details: list[str] = []
+
+        for topic in topics:
+            forum_topic_id = int(topic["forum_topic_id"])
+            topic_url = str(topic["topic_url"])
+            try:
+                self.sync_topic(topic_url)
+                synced += 1
+                details.append(f"Synced starter post for topic {forum_topic_id}.")
+                time.sleep(2)
+            except Exception as exc:
+                failed += 1
+                details.append(f"Failed to sync starter post for topic {forum_topic_id}: {exc}")
+
+        return StarterPostSyncResult(
+            selected=len(topics),
+            synced=synced,
+            failed=failed,
+            details=details,
+        )
+
+    def run_taverna_scan_worker(
+        self,
+        poll_interval_seconds: int = 300,
+        starter_sync_limit: int = 20,
+    ) -> None:
+        cycle = 0
+
+        def log(message: str) -> None:
+            timestamp = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S %Z")
+            print(f"[{timestamp}] {message}", flush=True)
+
+        while True:
+            cycle += 1
+            try:
+                log(f"Taverna scan cycle #{cycle}: started.")
+                scan_result = self.scan_taverna()
+                log(
+                    f"Taverna scan cycle #{cycle}: scanned, "
+                    f"found={scan_result.found}, saved={scan_result.inserted_or_updated}, "
+                    f"new={scan_result.new_topics}."
+                )
+
+                starter_result = self.sync_missing_starter_posts(limit=starter_sync_limit)
+                log(
+                    f"Taverna scan cycle #{cycle}: starter posts, "
+                    f"selected={starter_result.selected}, synced={starter_result.synced}, "
+                    f"failed={starter_result.failed}."
+                )
+                for detail in starter_result.details:
+                    log(f"  {detail}")
+
+                log(f"Taverna scan cycle #{cycle}: sleeping for {poll_interval_seconds}s.")
+                time.sleep(poll_interval_seconds)
+            except KeyboardInterrupt:
+                log("Taverna scan worker stopped by user.")
+                raise
+            except Exception as exc:
+                log(f"Taverna scan cycle #{cycle}: failed: {exc}")
+                log(f"Taverna scan cycle #{cycle}: retrying in {poll_interval_seconds}s.")
+                time.sleep(poll_interval_seconds)
 
     def list_new_topics(self, limit: int = 50) -> list[dict]:
         return self.db.get_new_topics(limit=limit)

@@ -665,6 +665,22 @@ class Database:
         rows = self._fetch_all(sql, (forum_topic_id,))
         return bool(rows)
 
+    def get_topics_missing_starter_posts(self, limit: int = 20) -> list[dict[str, Any]]:
+        sql = """
+        SELECT t.forum_topic_id, t.title, t.topic_url
+        FROM topics t
+        WHERE COALESCE(t.is_deleted, FALSE) = FALSE
+          AND NOT EXISTS (
+              SELECT 1
+              FROM posts p
+              WHERE p.forum_topic_id = t.forum_topic_id
+                AND p.is_topic_starter = TRUE
+          )
+        ORDER BY t.first_seen_at DESC
+        LIMIT %s
+        """
+        return self._fetch_all(sql, (limit,))
+
     def get_topic_with_starter_post(self, forum_topic_id: int) -> dict[str, Any] | None:
         sql = """
         SELECT

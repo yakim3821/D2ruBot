@@ -15,6 +15,7 @@ from .ui import run_ui_server
 
 
 WORKER_COMMANDS = {
+    "run-taverna-scan-worker",
     "run-auto-reply-worker",
     "run-quote-reply-worker",
     "run-deleted-topics-worker",
@@ -32,6 +33,18 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("login-check", help="Log in and verify that the session is authenticated.")
     subparsers.add_parser("send-test", help="Log in and send a test message to the configured thread URL.")
     subparsers.add_parser("scan-taverna", help="Scan Taverna section and save discovered topics to PostgreSQL.")
+
+    taverna_scan_worker_parser = subparsers.add_parser(
+        "run-taverna-scan-worker",
+        help="Run a background worker that scans Taverna and syncs missing starter posts.",
+    )
+    taverna_scan_worker_parser.add_argument("--interval", type=int, default=300, help="Seconds between scan cycles.")
+    taverna_scan_worker_parser.add_argument(
+        "--starter-sync-limit",
+        type=int,
+        default=20,
+        help="Maximum topics without saved starter posts to sync per cycle.",
+    )
 
     sync_topic_parser = subparsers.add_parser("sync-topic", help="Read one topic page and save its starter post.")
     sync_topic_parser.add_argument("url", help="Absolute forum topic URL.")
@@ -372,6 +385,15 @@ def main() -> int:
             print(
                 f"Scanned Taverna: found={result.found}, "
                 f"saved={result.inserted_or_updated}, new={result.new_topics}"
+            )
+        elif args.command == "run-taverna-scan-worker":
+            print(
+                f"Taverna scan worker started: interval={args.interval}s, "
+                f"starter_sync_limit={args.starter_sync_limit}"
+            )
+            service.run_taverna_scan_worker(
+                poll_interval_seconds=args.interval,
+                starter_sync_limit=args.starter_sync_limit,
             )
         elif args.command == "sync-topic":
             topic_page = service.sync_topic(args.url)
