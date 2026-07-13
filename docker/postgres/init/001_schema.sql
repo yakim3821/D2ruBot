@@ -26,7 +26,10 @@ CREATE TABLE IF NOT EXISTS topics (
     bot_replied_at TIMESTAMPTZ,
     reply_not_before TIMESTAMPTZ,
     reply_skip_reason TEXT,
-    reply_target TEXT NOT NULL DEFAULT 'topic'
+    reply_target TEXT NOT NULL DEFAULT 'topic',
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    deleted_at TIMESTAMPTZ,
+    deletion_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS posts (
@@ -169,6 +172,63 @@ CREATE TABLE IF NOT EXISTS daily_avatar_runs (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS topic_monitor_subscribers (
+    forum_user_id BIGINT PRIMARY KEY REFERENCES users(forum_user_id) ON DELETE CASCADE,
+    username TEXT NOT NULL,
+    profile_url TEXT,
+    source TEXT NOT NULL DEFAULT 'followers',
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    last_seen_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS topic_monitor_conversations (
+    subscriber_user_id BIGINT PRIMARY KEY REFERENCES topic_monitor_subscribers(forum_user_id) ON DELETE CASCADE,
+    conversation_id BIGINT,
+    conversation_url TEXT NOT NULL,
+    title TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS topic_monitor_deliveries (
+    id BIGSERIAL PRIMARY KEY,
+    subscriber_user_id BIGINT NOT NULL REFERENCES topic_monitor_subscribers(forum_user_id) ON DELETE CASCADE,
+    forum_topic_id BIGINT NOT NULL REFERENCES topics(forum_topic_id) ON DELETE CASCADE,
+    conversation_url TEXT NOT NULL,
+    status TEXT NOT NULL,
+    message_text TEXT NOT NULL,
+    error_message TEXT,
+    sent_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (subscriber_user_id, forum_topic_id)
+);
+
+CREATE TABLE IF NOT EXISTS deleted_topic_monitor_conversations (
+    subscriber_user_id BIGINT PRIMARY KEY REFERENCES topic_monitor_subscribers(forum_user_id) ON DELETE CASCADE,
+    conversation_id BIGINT,
+    conversation_url TEXT NOT NULL,
+    title TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS deleted_topic_monitor_deliveries (
+    id BIGSERIAL PRIMARY KEY,
+    subscriber_user_id BIGINT NOT NULL REFERENCES topic_monitor_subscribers(forum_user_id) ON DELETE CASCADE,
+    forum_topic_id BIGINT NOT NULL REFERENCES topics(forum_topic_id) ON DELETE CASCADE,
+    conversation_url TEXT NOT NULL,
+    status TEXT NOT NULL,
+    message_text TEXT NOT NULL,
+    error_message TEXT,
+    sent_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (subscriber_user_id, forum_topic_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_topics_reply_flags
     ON topics (bot_replied_once, first_seen_at DESC);
 
@@ -186,6 +246,12 @@ CREATE INDEX IF NOT EXISTS idx_bot_replies_topic
 
 CREATE INDEX IF NOT EXISTS idx_quote_reply_notifications_status_updated
     ON quote_reply_notifications (status, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_topic_monitor_deliveries_subscriber_status
+    ON topic_monitor_deliveries (subscriber_user_id, status, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_deleted_topic_monitor_deliveries_subscriber_status
+    ON deleted_topic_monitor_deliveries (subscriber_user_id, status, updated_at DESC);
 
 INSERT INTO scan_state (scope, last_scan_at)
 VALUES ('forum_section:taverna', NULL)

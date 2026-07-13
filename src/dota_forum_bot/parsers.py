@@ -168,6 +168,87 @@ def parse_taverna_topics(section_html: str) -> list[TopicRecord]:
     return topics
 
 
+def parse_followers_page(profile_html: str, exclude_user_id: int | None = None) -> list[ForumUserRecord]:
+    users: list[ForumUserRecord] = []
+    seen_user_ids: set[int] = set()
+
+    member_list_match = re.search(
+        r'<ul[^>]+class="[^"]*\bmember-list\b[^"]*"[^>]*>(.*?)</ul>',
+        profile_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if member_list_match:
+        for item_match in re.finditer(
+            r'<li\b(?=[^>]*\bclass="[^"]*\buser-(\d+)\b[^"]*")[^>]*>(.*?)</li>',
+            member_list_match.group(1),
+            flags=re.IGNORECASE | re.DOTALL,
+        ):
+            user_id = int(item_match.group(1))
+            if user_id == exclude_user_id or user_id in seen_user_ids:
+                continue
+
+            block = item_match.group(2)
+            link_match = re.search(
+                r'href="(/forum/members/([^"/]+?)\.(\d+)/?)"',
+                block,
+                flags=re.IGNORECASE,
+            )
+            if not link_match:
+                continue
+
+            link_user_id = int(link_match.group(3))
+            if link_user_id != user_id:
+                continue
+
+            display_name_match = re.search(
+                r'<div[^>]+class="[^"]*\bsettings-page__ignored-user-info--row\b[^"]*\bmb4\b[^"]*"[^>]*>(.*?)</div>',
+                block,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            username = (
+                _normalize_space(_html_to_text(display_name_match.group(1)))
+                if display_name_match
+                else ""
+            )
+            username = username or html.unescape(link_match.group(2)).strip() or _extract_anchor_text(block)
+            if not username:
+                continue
+
+            users.append(
+                ForumUserRecord(
+                    forum_user_id=user_id,
+                    username=username,
+                    profile_url=_to_absolute_url(link_match.group(1)),
+                )
+            )
+            seen_user_ids.add(user_id)
+
+    for match in MEMBER_URL_RE.finditer(profile_html):
+        user_id = int(match.group(1))
+        if user_id == exclude_user_id or user_id in seen_user_ids:
+            continue
+
+        anchor_start = profile_html.rfind("<a", 0, match.start())
+        anchor_end = profile_html.find("</a>", match.end())
+        if anchor_start == -1 or anchor_end == -1:
+            continue
+
+        username = _extract_anchor_text(profile_html[anchor_start : anchor_end + 4])
+        if not username:
+            continue
+
+        users.append(
+            ForumUserRecord(
+                forum_user_id=user_id,
+                username=username,
+                profile_url=_to_absolute_url(match.group(0)),
+            )
+        )
+        seen_user_ids.add(user_id)
+
+    return users
+
+
 def _parse_taverna_topic_blocks(list_html: str) -> list[TopicRecord]:
     topics: list[TopicRecord] = []
     item_matches = list(re.finditer(r'<li id="topic-(\d+)"[^>]*class="([^"]*)"', list_html))

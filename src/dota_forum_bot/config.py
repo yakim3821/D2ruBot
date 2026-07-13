@@ -69,7 +69,7 @@ class Settings:
         ).strip() or None
         test_conversation_url = os.getenv(
             "DOTA2_FORUM_TEST_CONVERSATION_URL",
-            "https://dota2.ru/forum/conversation/123.1039856/",
+            "",
         ).strip() or None
         test_thread_url = os.getenv("DOTA2_FORUM_TEST_THREAD_URL", "").strip() or None
         test_message = os.getenv("DOTA2_FORUM_TEST_MESSAGE", "").strip() or None

@@ -22,6 +22,7 @@ from .parsers import (
     extract_quoted_text,
     parse_quote_notifications_api,
     parse_quote_notifications,
+    parse_followers_page,
     parse_profile_posts_page,
     parse_profile_posts_total_pages,
     parse_taverna_topics,
@@ -35,6 +36,7 @@ TAVERNA_URL = "https://dota2.ru/forum/forums/taverna.6/"
 TAVERNA_SCOPE = "forum_section:taverna"
 NOTIFICATIONS_URL = "https://dota2.ru/forum/notifications/"
 BOT_PROFILE_POSTS_URL = "https://dota2.ru/forum/members/opera-mobile.847606/activity/posts/"
+BOT_PROFILE_FOLLOWERS_URL = "https://dota2.ru/forum/members/opera-mobile.847606/followers/"
 BOT_USER_ID = 847606
 BOT_USERNAME = "Opera Mobile"
 DISPLAY_TIMEZONE = ZoneInfo("Europe/Moscow")
@@ -61,6 +63,39 @@ class DraftResult:
     processed: int
     sent: int
     failed: int
+
+
+@dataclass
+class TopicMonitorTestResult:
+    scanned: int
+    selected: int
+    sent: int
+    failed: int
+    details: list[str] = field(default_factory=list)
+
+
+@dataclass
+class FollowersSyncResult:
+    found: int
+    saved: int
+    details: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SubscriberMonitorSendResult:
+    subscribers: int
+    conversations_created: int
+    sent: int
+    failed: int
+    details: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DeletedTopicsScanResult:
+    checked: int
+    deleted: int
+    failed: int
+    details: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -1183,6 +1218,448 @@ class ForumSyncService:
                 failed += 1
 
         return DraftResult(processed=processed, sent=sent, failed=failed)
+
+    def send_taverna_topics_test_message(
+        self,
+        conversation_url: str,
+        limit: int = 10,
+        content_limit: int = 1200,
+    ) -> TopicMonitorTestResult:
+        scan_result = self.scan_taverna()
+        topics = self.db.get_topics_pending_monitor_test(limit=limit)
+        details = [
+            (
+                "Scanned Taverna: "
+                f"found={scan_result.found}, saved={scan_result.inserted_or_updated}, "
+                f"new={scan_result.new_topics}"
+            )
+        ]
+
+        if not topics:
+            details.append("No topics pending monitor test delivery.")
+            return TopicMonitorTestResult(
+                scanned=scan_result.found,
+                selected=0,
+                sent=0,
+                failed=0,
+                details=details,
+            )
+
+        entries: list[dict[str, object]] = []
+        failed = 0
+        for topic in topics:
+            forum_topic_id = int(topic["forum_topic_id"])
+            try:
+                if not self.db.topic_has_starter_post(forum_topic_id):
+                    self.sync_topic(str(topic["topic_url"]))
+
+                topic_data = self.db.get_topic_with_starter_post(forum_topic_id)
+                if topic_data is None:
+                    raise ValueError(f"Topic {forum_topic_id} was not found after sync.")
+                entries.append(topic_data)
+            except Exception as exc:
+                failed += 1
+                details.append(f"Failed to sync topic {forum_topic_id}: {exc}")
+
+        if not entries:
+            details.append("No topic content was collected.")
+            return TopicMonitorTestResult(
+                scanned=scan_result.found,
+                selected=len(topics),
+                sent=0,
+                failed=failed,
+                details=details,
+            )
+
+        message = self._build_topic_monitor_message(entries, content_limit=content_limit)
+        try:
+            self.client.send_message_to_thread(conversation_url, message)
+            for entry in entries:
+                self.db.add_bot_reply(
+                    forum_topic_id=int(entry["forum_topic_id"]),
+                    target_type="conversation",
+                    target_url=conversation_url,
+                    reply_text=message,
+                    status="topic_monitor_test_sent",
+                    forum_post_id=entry.get("forum_post_id"),
+                )
+            details.append(f"Sent test topic monitor output to conversation: {conversation_url}")
+            return TopicMonitorTestResult(
+                scanned=scan_result.found,
+                selected=len(entries),
+                sent=len(entries),
+                failed=failed,
+                details=details,
+            )
+        except MessageSendError as exc:
+            failed += len(entries)
+            details.append(f"Failed to send test topic monitor output: {exc}")
+            return TopicMonitorTestResult(
+                scanned=scan_result.found,
+                selected=len(entries),
+                sent=0,
+                failed=failed,
+                details=details,
+            )
+
+    @classmethod
+    def _build_topic_monitor_message(cls, topics: list[dict[str, object]], content_limit: int = 1200) -> str:
+        blocks: list[str] = []
+        for topic in topics:
+            title = str(topic.get("title") or "").strip() or f"Topic {topic.get('forum_topic_id')}"
+            author = str(topic.get("author_username") or "").strip() or "Unknown"
+            content = cls._trim_text(str(topic.get("content_text") or "").strip(), content_limit)
+            blocks.append(f'[SPOILER="{cls._escape_bbcode_attribute(title)}"]\n{author}\n\n{content}\n[/SPOILER]')
+        return "\n".join(blocks).strip()
+
+    @staticmethod
+    def _escape_bbcode_attribute(value: str) -> str:
+        return value.replace('"', "'").strip()
+
+    def sync_topic_monitor_followers(self, followers_url: str = BOT_PROFILE_FOLLOWERS_URL) -> FollowersSyncResult:
+        response = self._fetch_page_or_raise(followers_url, context="bot followers page")
+        followers = parse_followers_page(response.text, exclude_user_id=BOT_USER_ID)
+        saved = 0
+        details: list[str] = []
+
+        for follower in followers:
+            self.db.upsert_subscriber(follower, source="followers")
+            saved += 1
+
+        details.append(f"Followers synced from {response.url}: found={len(followers)}, saved={saved}")
+        return FollowersSyncResult(found=len(followers), saved=saved, details=details)
+
+    def send_topic_monitor_to_followers(
+        self,
+        subscriber_limit: int = 100,
+        topic_limit: int = 10,
+        content_limit: int = 1200,
+        sync_followers: bool = True,
+    ) -> SubscriberMonitorSendResult:
+        details: list[str] = []
+        if sync_followers:
+            sync_result = self.sync_topic_monitor_followers()
+            details.extend(sync_result.details)
+
+        scan_result = self.scan_taverna()
+        details.append(
+            "Scanned Taverna: "
+            f"found={scan_result.found}, saved={scan_result.inserted_or_updated}, new={scan_result.new_topics}"
+        )
+
+        subscribers = self.db.get_active_topic_monitor_subscribers(limit=subscriber_limit)
+        conversations_created = 0
+        sent = 0
+        failed = 0
+
+        for subscriber in subscribers:
+            subscriber_user_id = int(subscriber["forum_user_id"])
+            username = str(subscriber.get("username") or subscriber_user_id)
+            try:
+                topics = self.db.get_topics_pending_monitor_delivery(
+                    subscriber_user_id=subscriber_user_id,
+                    limit=topic_limit,
+                )
+                entries = self._collect_topic_monitor_entries(topics)
+                if not entries:
+                    details.append(f"{username}: no topics pending delivery.")
+                    continue
+
+                message = self._build_topic_monitor_message(entries, content_limit=content_limit)
+                conversation = self.db.get_subscriber_conversation(subscriber_user_id)
+                if conversation is None:
+                    title = "Taverna topic monitor"
+                    created = self.client.create_conversation(
+                        recipient_user_id=subscriber_user_id,
+                        title=title,
+                        content=message,
+                    )
+                    conversation_url = self._extract_created_conversation_url(created)
+                    conversation_id = self._extract_created_conversation_id(created, conversation_url)
+                    self.db.upsert_subscriber_conversation(
+                        subscriber_user_id=subscriber_user_id,
+                        conversation_url=conversation_url,
+                        conversation_id=conversation_id,
+                        title=title,
+                    )
+                    conversations_created += 1
+                else:
+                    conversation_url = str(conversation["conversation_url"])
+                    self.client.send_message_to_thread(conversation_url, message)
+
+                for entry in entries:
+                    self.db.add_topic_monitor_delivery(
+                        subscriber_user_id=subscriber_user_id,
+                        forum_topic_id=int(entry["forum_topic_id"]),
+                        conversation_url=conversation_url,
+                        status="sent",
+                        message_text=message,
+                    )
+                sent += 1
+                details.append(f"{username}: sent {len(entries)} topics to {conversation_url}")
+                time.sleep(10)
+            except Exception as exc:
+                failed += 1
+                details.append(f"{username}: failed to send topic monitor output: {exc}")
+
+        return SubscriberMonitorSendResult(
+            subscribers=len(subscribers),
+            conversations_created=conversations_created,
+            sent=sent,
+            failed=failed,
+            details=details,
+        )
+
+    def scan_deleted_taverna_topics(self, limit: int = 100) -> DeletedTopicsScanResult:
+        candidates = self.db.get_topics_pending_deletion_check(limit=limit)
+        checked = 0
+        deleted = 0
+        failed = 0
+        details: list[str] = []
+
+        for topic in candidates:
+            checked += 1
+            forum_topic_id = int(topic["forum_topic_id"])
+            topic_url = str(topic["topic_url"])
+            try:
+                response = self.client.fetch_page(topic_url)
+                if response.status >= 400 and response.status not in {404, 410}:
+                    raise ForumBotError(f"HTTP {response.status} while checking {topic_url}")
+                delete_reason = self._topic_delete_reason(topic_url, response)
+                if delete_reason is None:
+                    self.db.mark_topic_available(forum_topic_id)
+                    continue
+
+                self.db.mark_topic_deleted(forum_topic_id, reason=delete_reason)
+                deleted += 1
+                details.append(f"Marked topic {forum_topic_id} as deleted: {delete_reason}")
+            except Exception as exc:
+                failed += 1
+                details.append(f"Failed to check topic {forum_topic_id}: {exc}")
+
+        return DeletedTopicsScanResult(checked=checked, deleted=deleted, failed=failed, details=details)
+
+    def send_deleted_topics_to_followers(
+        self,
+        subscriber_limit: int = 100,
+        topic_limit: int = 10,
+        content_limit: int = 1200,
+        deletion_scan_limit: int = 100,
+        sync_followers: bool = True,
+    ) -> SubscriberMonitorSendResult:
+        details: list[str] = []
+        if sync_followers:
+            sync_result = self.sync_topic_monitor_followers()
+            details.extend(sync_result.details)
+
+        scan_result = self.scan_deleted_taverna_topics(limit=deletion_scan_limit)
+        details.append(
+            "Checked deleted Taverna topics: "
+            f"checked={scan_result.checked}, deleted={scan_result.deleted}, failed={scan_result.failed}"
+        )
+        details.extend(scan_result.details)
+
+        subscribers = self.db.get_active_topic_monitor_subscribers(limit=subscriber_limit)
+        conversations_created = 0
+        sent = 0
+        failed = 0
+
+        for subscriber in subscribers:
+            subscriber_user_id = int(subscriber["forum_user_id"])
+            username = str(subscriber.get("username") or subscriber_user_id)
+            try:
+                topics = self.db.get_deleted_topics_pending_monitor_delivery(
+                    subscriber_user_id=subscriber_user_id,
+                    limit=topic_limit,
+                )
+                entries = self._collect_deleted_topic_monitor_entries(topics)
+                if not entries:
+                    details.append(f"{username}: no deleted topics pending delivery.")
+                    continue
+
+                message = self._build_deleted_topic_monitor_message(entries, content_limit=content_limit)
+                conversation = self.db.get_subscriber_deleted_topics_conversation(subscriber_user_id)
+                if conversation is None:
+                    title = "Удаленные сообщения таверны"
+                    created = self.client.create_conversation(
+                        recipient_user_id=subscriber_user_id,
+                        title=title,
+                        content=message,
+                    )
+                    conversation_url = self._extract_created_conversation_url(created)
+                    conversation_id = self._extract_created_conversation_id(created, conversation_url)
+                    self.db.upsert_subscriber_deleted_topics_conversation(
+                        subscriber_user_id=subscriber_user_id,
+                        conversation_url=conversation_url,
+                        conversation_id=conversation_id,
+                        title=title,
+                    )
+                    conversations_created += 1
+                else:
+                    conversation_url = str(conversation["conversation_url"])
+                    self.client.send_message_to_thread(conversation_url, message)
+
+                for entry in entries:
+                    self.db.add_deleted_topic_monitor_delivery(
+                        subscriber_user_id=subscriber_user_id,
+                        forum_topic_id=int(entry["forum_topic_id"]),
+                        conversation_url=conversation_url,
+                        status="sent",
+                        message_text=message,
+                    )
+                sent += 1
+                details.append(f"{username}: sent {len(entries)} deleted topics to {conversation_url}")
+                time.sleep(10)
+            except Exception as exc:
+                failed += 1
+                details.append(f"{username}: failed to send deleted topic monitor output: {exc}")
+
+        return SubscriberMonitorSendResult(
+            subscribers=len(subscribers),
+            conversations_created=conversations_created,
+            sent=sent,
+            failed=failed,
+            details=details,
+        )
+
+    def _collect_deleted_topic_monitor_entries(self, topics: list[dict[str, object]]) -> list[dict[str, object]]:
+        entries: list[dict[str, object]] = []
+        for topic in topics:
+            forum_topic_id = int(topic["forum_topic_id"])
+            topic_data = self.db.get_topic_with_starter_post(forum_topic_id)
+            if topic_data is None:
+                topic_data = dict(topic)
+                topic_data["author_username"] = "Unknown"
+                topic_data["content_text"] = ""
+            else:
+                topic_data["deleted_at"] = topic.get("deleted_at")
+                topic_data["deletion_reason"] = topic.get("deletion_reason")
+            entries.append(topic_data)
+        return entries
+
+    @classmethod
+    def _build_deleted_topic_monitor_message(cls, topics: list[dict[str, object]], content_limit: int = 1200) -> str:
+        blocks: list[str] = []
+        for topic in topics:
+            title = str(topic.get("title") or "").strip() or f"Topic {topic.get('forum_topic_id')}"
+            author = str(topic.get("author_username") or "").strip() or "Unknown"
+            topic_url = str(topic.get("topic_url") or "").strip()
+            content = cls._trim_text(str(topic.get("content_text") or "").strip(), content_limit)
+            if not content:
+                content = "Starter post was not saved before the topic became unavailable."
+            header_lines = [f"Author: {author}"]
+            if topic_url:
+                header_lines.append(f"Original URL: {topic_url}")
+            reason = str(topic.get("deletion_reason") or "").strip()
+            if reason:
+                header_lines.append(f"Reason: {reason}")
+            blocks.append(
+                f'[SPOILER="{cls._escape_bbcode_attribute(title)}"]\n'
+                f'{"; ".join(header_lines)}\n\n{content}\n[/SPOILER]'
+            )
+        return "\n".join(blocks).strip()
+
+    def _topic_delete_reason(self, requested_url: str, response) -> str | None:
+        if response.status in {404, 410}:
+            return f"HTTP {response.status}"
+
+        requested_topic_id = self._extract_thread_id_from_url(requested_url)
+        if requested_topic_id is None:
+            return None
+
+        final_topic_id = self._extract_thread_id_from_url(response.url)
+        if final_topic_id != requested_topic_id:
+            return f"redirected_to:{response.url}"
+        return None
+
+    def run_deleted_topics_worker(
+        self,
+        poll_interval_seconds: int = 1800,
+        subscriber_limit: int = 100,
+        topic_limit: int = 10,
+        content_limit: int = 1200,
+        deletion_scan_limit: int = 100,
+    ) -> None:
+        cycle = 0
+
+        def log(message: str) -> None:
+            timestamp = datetime.now(timezone.utc).astimezone(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S %Z")
+            print(f"[{timestamp}] {message}", flush=True)
+
+        while True:
+            cycle += 1
+            try:
+                log(f"Deleted topics cycle #{cycle}: started.")
+                result = self.send_deleted_topics_to_followers(
+                    subscriber_limit=subscriber_limit,
+                    topic_limit=topic_limit,
+                    content_limit=content_limit,
+                    deletion_scan_limit=deletion_scan_limit,
+                    sync_followers=True,
+                )
+                log(
+                    f"Deleted topics cycle #{cycle}: finished, "
+                    f"subscribers={result.subscribers}, created={result.conversations_created}, "
+                    f"sent={result.sent}, failed={result.failed}."
+                )
+                for detail in result.details:
+                    log(f"  {detail}")
+                log(f"Deleted topics cycle #{cycle}: sleeping for {poll_interval_seconds}s.")
+                time.sleep(poll_interval_seconds)
+            except KeyboardInterrupt:
+                log("Deleted topics worker stopped by user.")
+                raise
+            except Exception as exc:
+                log(f"Deleted topics cycle #{cycle}: failed: {exc}")
+                log(f"Deleted topics cycle #{cycle}: retrying in {poll_interval_seconds}s.")
+                time.sleep(poll_interval_seconds)
+
+    def _collect_topic_monitor_entries(self, topics: list[dict[str, object]]) -> list[dict[str, object]]:
+        entries: list[dict[str, object]] = []
+        for topic in topics:
+            forum_topic_id = int(topic["forum_topic_id"])
+            if not self.db.topic_has_starter_post(forum_topic_id):
+                self.sync_topic(str(topic["topic_url"]))
+
+            topic_data = self.db.get_topic_with_starter_post(forum_topic_id)
+            if topic_data is None:
+                raise ValueError(f"Topic {forum_topic_id} was not found after sync.")
+            entries.append(topic_data)
+        return entries
+
+    def _extract_created_conversation_url(self, payload: dict) -> str:
+        for value in self._walk_payload_values(payload):
+            if not isinstance(value, str):
+                continue
+            if "/conversation/" in value or value.startswith("conversation/"):
+                if value.startswith("http://") or value.startswith("https://"):
+                    return value
+                if value.startswith("conversation/"):
+                    return f"{self.client.forum_base_url}{value}"
+                return f"{self.client.base_url}{value if value.startswith('/') else '/' + value}"
+        raise MessageSendError(f"Conversation was created, but response did not include a conversation URL: {payload}")
+
+    def _extract_created_conversation_id(self, payload: dict, conversation_url: str) -> int | None:
+        match = re.search(r"(?:/forum)?/conversation/(?:[^/]*\.)?(\d+)(?:/|$|[?#])", conversation_url)
+        if match:
+            return int(match.group(1))
+        for value in self._walk_payload_values(payload):
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str) and value.isdigit():
+                return int(value)
+        return None
+
+    @staticmethod
+    def _walk_payload_values(payload):
+        if isinstance(payload, dict):
+            for value in payload.values():
+                yield from ForumSyncService._walk_payload_values(value)
+        elif isinstance(payload, list):
+            for value in payload:
+                yield from ForumSyncService._walk_payload_values(value)
+        else:
+            yield payload
 
     def publish_drafted_topics(self, limit: int = 5) -> PublishResult:
         topics = self.db.get_topics_ready_to_publish(limit=limit)

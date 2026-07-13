@@ -427,6 +427,22 @@ class Database:
         """
         return self._fetch_all(sql, (limit,))
 
+    def get_topics_pending_monitor_test(self, limit: int = 20) -> list[dict[str, Any]]:
+        sql = """
+        SELECT t.forum_topic_id, t.title, t.topic_url
+        FROM topics t
+        WHERE NOT EXISTS (
+              SELECT 1
+              FROM bot_replies br
+              WHERE br.forum_topic_id = t.forum_topic_id
+                AND br.target_type = 'conversation'
+                AND br.status = 'topic_monitor_test_sent'
+          )
+        ORDER BY t.first_seen_at DESC
+        LIMIT %s
+        """
+        return self._fetch_all(sql, (limit,))
+
     def get_topics_pending_llm_draft(self, limit: int = 20) -> list[dict[str, Any]]:
         sql = """
         SELECT t.forum_topic_id, t.title, t.topic_url
@@ -655,10 +671,13 @@ class Database:
             t.forum_topic_id,
             t.title,
             t.topic_url,
+            u.username AS author_username,
             p.forum_post_id,
             p.content_raw,
             p.content_text
         FROM topics t
+        LEFT JOIN users u
+            ON u.forum_user_id = t.author_user_id
         LEFT JOIN posts p
             ON p.forum_topic_id = t.forum_topic_id
            AND p.is_topic_starter = TRUE
@@ -700,6 +719,262 @@ class Database:
                 reply_text,
                 status,
                 error_message,
+            ),
+        )
+
+    def upsert_subscriber(self, user: ForumUserRecord, source: str = "followers") -> None:
+        self.upsert_user(user)
+        sql = """
+        INSERT INTO topic_monitor_subscribers (
+            forum_user_id,
+            username,
+            profile_url,
+            source,
+            is_active,
+            last_seen_at,
+            updated_at
+        )
+        VALUES (%s, %s, %s, %s, TRUE, NOW(), NOW())
+        ON CONFLICT (forum_user_id) DO UPDATE
+        SET username = EXCLUDED.username,
+            profile_url = COALESCE(EXCLUDED.profile_url, topic_monitor_subscribers.profile_url),
+            source = EXCLUDED.source,
+            is_active = TRUE,
+            last_seen_at = NOW(),
+            updated_at = NOW()
+        """
+        self._execute(sql, (user.forum_user_id, user.username, user.profile_url, source))
+
+    def get_active_topic_monitor_subscribers(self, limit: int = 100) -> list[dict[str, Any]]:
+        sql = """
+        SELECT forum_user_id, username, profile_url
+        FROM topic_monitor_subscribers
+        WHERE is_active = TRUE
+        ORDER BY username ASC
+        LIMIT %s
+        """
+        return self._fetch_all(sql, (limit,))
+
+    def get_subscriber_conversation(self, subscriber_user_id: int) -> dict[str, Any] | None:
+        sql = """
+        SELECT subscriber_user_id, conversation_id, conversation_url, title, created_at, updated_at
+        FROM topic_monitor_conversations
+        WHERE subscriber_user_id = %s
+        LIMIT 1
+        """
+        rows = self._fetch_all(sql, (subscriber_user_id,))
+        return rows[0] if rows else None
+
+    def upsert_subscriber_conversation(
+        self,
+        subscriber_user_id: int,
+        conversation_url: str,
+        conversation_id: int | None,
+        title: str,
+    ) -> None:
+        sql = """
+        INSERT INTO topic_monitor_conversations (
+            subscriber_user_id,
+            conversation_id,
+            conversation_url,
+            title,
+            created_at,
+            updated_at
+        )
+        VALUES (%s, %s, %s, %s, NOW(), NOW())
+        ON CONFLICT (subscriber_user_id) DO UPDATE
+        SET conversation_id = COALESCE(EXCLUDED.conversation_id, topic_monitor_conversations.conversation_id),
+            conversation_url = EXCLUDED.conversation_url,
+            title = EXCLUDED.title,
+            updated_at = NOW()
+        """
+        self._execute(sql, (subscriber_user_id, conversation_id, conversation_url, title))
+
+    def get_topics_pending_monitor_delivery(self, subscriber_user_id: int, limit: int = 20) -> list[dict[str, Any]]:
+        sql = """
+        SELECT t.forum_topic_id, t.title, t.topic_url
+        FROM topics t
+        WHERE NOT EXISTS (
+              SELECT 1
+              FROM topic_monitor_deliveries d
+              WHERE d.subscriber_user_id = %s
+                AND d.forum_topic_id = t.forum_topic_id
+                AND d.status = 'sent'
+          )
+        ORDER BY t.first_seen_at DESC
+        LIMIT %s
+        """
+        return self._fetch_all(sql, (subscriber_user_id, limit))
+
+    def get_topics_pending_deletion_check(self, limit: int = 100) -> list[dict[str, Any]]:
+        sql = """
+        SELECT forum_topic_id, title, topic_url, last_scanned_at, first_seen_at
+        FROM topics
+        WHERE COALESCE(is_deleted, FALSE) = FALSE
+          AND forum_section_id = 6
+        ORDER BY last_scanned_at ASC NULLS FIRST, first_seen_at DESC
+        LIMIT %s
+        """
+        return self._fetch_all(sql, (limit,))
+
+    def mark_topic_deleted(self, forum_topic_id: int, reason: str | None = None) -> None:
+        sql = """
+        UPDATE topics
+        SET is_deleted = TRUE,
+            deleted_at = COALESCE(deleted_at, NOW()),
+            deletion_reason = %s,
+            last_scanned_at = NOW()
+        WHERE forum_topic_id = %s
+        """
+        self._execute(sql, (reason, forum_topic_id))
+
+    def mark_topic_available(self, forum_topic_id: int) -> None:
+        sql = """
+        UPDATE topics
+        SET last_scanned_at = NOW()
+        WHERE forum_topic_id = %s
+        """
+        self._execute(sql, (forum_topic_id,))
+
+    def get_subscriber_deleted_topics_conversation(self, subscriber_user_id: int) -> dict[str, Any] | None:
+        sql = """
+        SELECT subscriber_user_id, conversation_id, conversation_url, title, created_at, updated_at
+        FROM deleted_topic_monitor_conversations
+        WHERE subscriber_user_id = %s
+        LIMIT 1
+        """
+        rows = self._fetch_all(sql, (subscriber_user_id,))
+        return rows[0] if rows else None
+
+    def upsert_subscriber_deleted_topics_conversation(
+        self,
+        subscriber_user_id: int,
+        conversation_url: str,
+        conversation_id: int | None,
+        title: str,
+    ) -> None:
+        sql = """
+        INSERT INTO deleted_topic_monitor_conversations (
+            subscriber_user_id,
+            conversation_id,
+            conversation_url,
+            title,
+            created_at,
+            updated_at
+        )
+        VALUES (%s, %s, %s, %s, NOW(), NOW())
+        ON CONFLICT (subscriber_user_id) DO UPDATE
+        SET conversation_id = COALESCE(EXCLUDED.conversation_id, deleted_topic_monitor_conversations.conversation_id),
+            conversation_url = EXCLUDED.conversation_url,
+            title = EXCLUDED.title,
+            updated_at = NOW()
+        """
+        self._execute(sql, (subscriber_user_id, conversation_id, conversation_url, title))
+
+    def get_deleted_topics_pending_monitor_delivery(
+        self,
+        subscriber_user_id: int,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        sql = """
+        SELECT t.forum_topic_id, t.title, t.topic_url, t.deleted_at, t.deletion_reason
+        FROM topics t
+        WHERE COALESCE(t.is_deleted, FALSE) = TRUE
+          AND NOT EXISTS (
+              SELECT 1
+              FROM deleted_topic_monitor_deliveries d
+              WHERE d.subscriber_user_id = %s
+                AND d.forum_topic_id = t.forum_topic_id
+                AND d.status = 'sent'
+          )
+        ORDER BY t.deleted_at DESC NULLS LAST, t.first_seen_at DESC
+        LIMIT %s
+        """
+        return self._fetch_all(sql, (subscriber_user_id, limit))
+
+    def add_topic_monitor_delivery(
+        self,
+        subscriber_user_id: int,
+        forum_topic_id: int,
+        conversation_url: str,
+        status: str,
+        message_text: str,
+        error_message: str | None = None,
+    ) -> None:
+        sql = """
+        INSERT INTO topic_monitor_deliveries (
+            subscriber_user_id,
+            forum_topic_id,
+            conversation_url,
+            status,
+            message_text,
+            error_message,
+            created_at,
+            updated_at,
+            sent_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW(), CASE WHEN %s = 'sent' THEN NOW() ELSE NULL END)
+        ON CONFLICT (subscriber_user_id, forum_topic_id) DO UPDATE
+        SET conversation_url = EXCLUDED.conversation_url,
+            status = EXCLUDED.status,
+            message_text = EXCLUDED.message_text,
+            error_message = EXCLUDED.error_message,
+            updated_at = NOW(),
+            sent_at = CASE WHEN EXCLUDED.status = 'sent' THEN NOW() ELSE topic_monitor_deliveries.sent_at END
+        """
+        self._execute(
+            sql,
+            (
+                subscriber_user_id,
+                forum_topic_id,
+                conversation_url,
+                status,
+                message_text,
+                error_message,
+                status,
+            ),
+        )
+
+    def add_deleted_topic_monitor_delivery(
+        self,
+        subscriber_user_id: int,
+        forum_topic_id: int,
+        conversation_url: str,
+        status: str,
+        message_text: str,
+        error_message: str | None = None,
+    ) -> None:
+        sql = """
+        INSERT INTO deleted_topic_monitor_deliveries (
+            subscriber_user_id,
+            forum_topic_id,
+            conversation_url,
+            status,
+            message_text,
+            error_message,
+            created_at,
+            updated_at,
+            sent_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW(), CASE WHEN %s = 'sent' THEN NOW() ELSE NULL END)
+        ON CONFLICT (subscriber_user_id, forum_topic_id) DO UPDATE
+        SET conversation_url = EXCLUDED.conversation_url,
+            status = EXCLUDED.status,
+            message_text = EXCLUDED.message_text,
+            error_message = EXCLUDED.error_message,
+            updated_at = NOW(),
+            sent_at = CASE WHEN EXCLUDED.status = 'sent' THEN NOW() ELSE deleted_topic_monitor_deliveries.sent_at END
+        """
+        self._execute(
+            sql,
+            (
+                subscriber_user_id,
+                forum_topic_id,
+                conversation_url,
+                status,
+                message_text,
+                error_message,
+                status,
             ),
         )
 
@@ -1302,6 +1577,18 @@ class Database:
             ADD COLUMN IF NOT EXISTS reply_skip_reason TEXT
             """,
             """
+            ALTER TABLE topics
+            ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT FALSE
+            """,
+            """
+            ALTER TABLE topics
+            ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ
+            """,
+            """
+            ALTER TABLE topics
+            ADD COLUMN IF NOT EXISTS deletion_reason TEXT
+            """,
+            """
             CREATE TABLE IF NOT EXISTS scheduler_settings (
                 key TEXT PRIMARY KEY,
                 enabled BOOLEAN NOT NULL DEFAULT FALSE,
@@ -1415,6 +1702,76 @@ class Database:
             INSERT INTO scheduler_settings (key, enabled, schedule_time, updated_at)
             VALUES ('daily_avatar', FALSE, '12:00', NOW())
             ON CONFLICT (key) DO NOTHING
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS topic_monitor_subscribers (
+                forum_user_id BIGINT PRIMARY KEY REFERENCES users(forum_user_id) ON DELETE CASCADE,
+                username TEXT NOT NULL,
+                profile_url TEXT,
+                source TEXT NOT NULL DEFAULT 'followers',
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                last_seen_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS topic_monitor_conversations (
+                subscriber_user_id BIGINT PRIMARY KEY REFERENCES topic_monitor_subscribers(forum_user_id) ON DELETE CASCADE,
+                conversation_id BIGINT,
+                conversation_url TEXT NOT NULL,
+                title TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS topic_monitor_deliveries (
+                id BIGSERIAL PRIMARY KEY,
+                subscriber_user_id BIGINT NOT NULL REFERENCES topic_monitor_subscribers(forum_user_id) ON DELETE CASCADE,
+                forum_topic_id BIGINT NOT NULL REFERENCES topics(forum_topic_id) ON DELETE CASCADE,
+                conversation_url TEXT NOT NULL,
+                status TEXT NOT NULL,
+                message_text TEXT NOT NULL,
+                error_message TEXT,
+                sent_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (subscriber_user_id, forum_topic_id)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_topic_monitor_deliveries_subscriber_status
+            ON topic_monitor_deliveries (subscriber_user_id, status, updated_at DESC)
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS deleted_topic_monitor_conversations (
+                subscriber_user_id BIGINT PRIMARY KEY REFERENCES topic_monitor_subscribers(forum_user_id) ON DELETE CASCADE,
+                conversation_id BIGINT,
+                conversation_url TEXT NOT NULL,
+                title TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS deleted_topic_monitor_deliveries (
+                id BIGSERIAL PRIMARY KEY,
+                subscriber_user_id BIGINT NOT NULL REFERENCES topic_monitor_subscribers(forum_user_id) ON DELETE CASCADE,
+                forum_topic_id BIGINT NOT NULL REFERENCES topics(forum_topic_id) ON DELETE CASCADE,
+                conversation_url TEXT NOT NULL,
+                status TEXT NOT NULL,
+                message_text TEXT NOT NULL,
+                error_message TEXT,
+                sent_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (subscriber_user_id, forum_topic_id)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_deleted_topic_monitor_deliveries_subscriber_status
+            ON deleted_topic_monitor_deliveries (subscriber_user_id, status, updated_at DESC)
             """,
             """
             INSERT INTO topic_generation_prompts (

@@ -17,6 +17,7 @@ from .ui import run_ui_server
 WORKER_COMMANDS = {
     "run-auto-reply-worker",
     "run-quote-reply-worker",
+    "run-deleted-topics-worker",
     "run-daily-summary-worker",
     "run-daily-topic-worker",
     "run-daily-avatar-worker",
@@ -43,6 +44,100 @@ def build_parser() -> argparse.ArgumentParser:
         help="Sync new topics and send draft replies into the safe test conversation.",
     )
     draft_topics_parser.add_argument("--limit", type=int, default=5, help="Maximum number of draft topics to process.")
+
+    taverna_topics_test_parser = subparsers.add_parser(
+        "send-taverna-topics-test",
+        help="Scan Taverna, collect topic starter posts, and send the monitor output to the safe test conversation.",
+    )
+    taverna_topics_test_parser.add_argument("--limit", type=int, default=10, help="Maximum number of topics to send.")
+    taverna_topics_test_parser.add_argument(
+        "--content-limit",
+        type=int,
+        default=1200,
+        help="Maximum characters of starter post text to include per topic.",
+    )
+    taverna_topics_test_parser.add_argument(
+        "--conversation-url",
+        help="Absolute conversation URL where the topic monitor output should be sent.",
+    )
+
+    deleted_scan_parser = subparsers.add_parser(
+        "scan-deleted-taverna-topics",
+        help="Check stored Taverna topics and mark unavailable topics as deleted.",
+    )
+    deleted_scan_parser.add_argument("--limit", type=int, default=100, help="Maximum stored topics to check.")
+
+    followers_sync_parser = subparsers.add_parser(
+        "sync-topic-monitor-followers",
+        help="Parse bot followers and store them as topic monitor subscribers.",
+    )
+    followers_sync_parser.add_argument(
+        "--followers-url",
+        default="https://dota2.ru/forum/members/opera-mobile.847606/followers/",
+        help="Absolute followers page URL.",
+    )
+
+    followers_send_parser = subparsers.add_parser(
+        "send-topic-monitor-followers",
+        help="Create per-subscriber conversations and send topic monitor output to bot followers.",
+    )
+    followers_send_parser.add_argument("--subscriber-limit", type=int, default=100, help="Maximum subscribers to process.")
+    followers_send_parser.add_argument("--topic-limit", type=int, default=10, help="Maximum topics to send per subscriber.")
+    followers_send_parser.add_argument(
+        "--content-limit",
+        type=int,
+        default=1200,
+        help="Maximum characters of starter post text to include per topic.",
+    )
+    followers_send_parser.add_argument(
+        "--no-sync-followers",
+        action="store_true",
+        help="Use subscribers already stored in DB without reparsing the followers page.",
+    )
+
+    deleted_topics_send_parser = subparsers.add_parser(
+        "send-deleted-topics-followers",
+        help="Create per-subscriber conversations and send deleted Taverna topics to bot followers.",
+    )
+    deleted_topics_send_parser.add_argument("--subscriber-limit", type=int, default=100, help="Maximum subscribers to process.")
+    deleted_topics_send_parser.add_argument("--topic-limit", type=int, default=10, help="Maximum deleted topics to send per subscriber.")
+    deleted_topics_send_parser.add_argument(
+        "--deletion-scan-limit",
+        type=int,
+        default=100,
+        help="Maximum stored Taverna topics to check for deletion before sending.",
+    )
+    deleted_topics_send_parser.add_argument(
+        "--content-limit",
+        type=int,
+        default=1200,
+        help="Maximum characters of starter post text to include per topic.",
+    )
+    deleted_topics_send_parser.add_argument(
+        "--no-sync-followers",
+        action="store_true",
+        help="Use subscribers already stored in DB without reparsing the followers page.",
+    )
+
+    deleted_topics_worker_parser = subparsers.add_parser(
+        "run-deleted-topics-worker",
+        help="Run a background worker that sends deleted Taverna topics to bot followers.",
+    )
+    deleted_topics_worker_parser.add_argument("--interval", type=int, default=1800, help="Seconds between cycles.")
+    deleted_topics_worker_parser.add_argument("--subscriber-limit", type=int, default=100, help="Maximum subscribers to process per cycle.")
+    deleted_topics_worker_parser.add_argument("--topic-limit", type=int, default=10, help="Maximum deleted topics to send per subscriber per cycle.")
+    deleted_topics_worker_parser.add_argument(
+        "--deletion-scan-limit",
+        type=int,
+        default=100,
+        help="Maximum stored Taverna topics to check for deletion per cycle.",
+    )
+    deleted_topics_worker_parser.add_argument(
+        "--content-limit",
+        type=int,
+        default=1200,
+        help="Maximum characters of starter post text to include per topic.",
+    )
 
     publish_topics_parser = subparsers.add_parser(
         "publish-drafted-topics",
@@ -296,6 +391,76 @@ def main() -> int:
             print(
                 f"Draft processing finished: processed={result.processed}, "
                 f"sent={result.sent}, failed={result.failed}"
+            )
+        elif args.command == "send-taverna-topics-test":
+            conversation_url = args.conversation_url or settings.test_conversation_url
+            if not conversation_url:
+                raise ForumBotError(
+                    "Set DOTA2_FORUM_TEST_CONVERSATION_URL or pass --conversation-url for send-taverna-topics-test."
+                )
+            result = service.send_taverna_topics_test_message(
+                conversation_url=conversation_url,
+                limit=args.limit,
+                content_limit=args.content_limit,
+            )
+            print(
+                f"Taverna topics test finished: scanned={result.scanned}, "
+                f"selected={result.selected}, sent={result.sent}, failed={result.failed}"
+            )
+            for detail in result.details:
+                print(detail)
+        elif args.command == "scan-deleted-taverna-topics":
+            result = service.scan_deleted_taverna_topics(limit=args.limit)
+            print(
+                f"Deleted topic scan finished: checked={result.checked}, "
+                f"deleted={result.deleted}, failed={result.failed}"
+            )
+            for detail in result.details:
+                print(detail)
+        elif args.command == "sync-topic-monitor-followers":
+            result = service.sync_topic_monitor_followers(followers_url=args.followers_url)
+            print(f"Topic monitor followers synced: found={result.found}, saved={result.saved}")
+            for detail in result.details:
+                print(detail)
+        elif args.command == "send-topic-monitor-followers":
+            result = service.send_topic_monitor_to_followers(
+                subscriber_limit=args.subscriber_limit,
+                topic_limit=args.topic_limit,
+                content_limit=args.content_limit,
+                sync_followers=not args.no_sync_followers,
+            )
+            print(
+                f"Topic monitor follower delivery finished: subscribers={result.subscribers}, "
+                f"conversations_created={result.conversations_created}, sent={result.sent}, failed={result.failed}"
+            )
+            for detail in result.details:
+                print(detail)
+        elif args.command == "send-deleted-topics-followers":
+            result = service.send_deleted_topics_to_followers(
+                subscriber_limit=args.subscriber_limit,
+                topic_limit=args.topic_limit,
+                content_limit=args.content_limit,
+                deletion_scan_limit=args.deletion_scan_limit,
+                sync_followers=not args.no_sync_followers,
+            )
+            print(
+                f"Deleted topic follower delivery finished: subscribers={result.subscribers}, "
+                f"conversations_created={result.conversations_created}, sent={result.sent}, failed={result.failed}"
+            )
+            for detail in result.details:
+                print(detail)
+        elif args.command == "run-deleted-topics-worker":
+            print(
+                f"Deleted topics worker started: interval={args.interval}s, "
+                f"subscriber_limit={args.subscriber_limit}, topic_limit={args.topic_limit}, "
+                f"deletion_scan_limit={args.deletion_scan_limit}"
+            )
+            service.run_deleted_topics_worker(
+                poll_interval_seconds=args.interval,
+                subscriber_limit=args.subscriber_limit,
+                topic_limit=args.topic_limit,
+                content_limit=args.content_limit,
+                deletion_scan_limit=args.deletion_scan_limit,
             )
         elif args.command == "publish-drafted-topics":
             result = service.publish_drafted_topics(limit=args.limit)

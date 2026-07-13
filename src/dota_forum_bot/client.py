@@ -252,6 +252,7 @@ class Dota2ForumClient:
                 f"Failed to open thread page before replying. HTTP {page.status}: {page.text[:300]}"
             )
         self._ensure_thread_response(thread_url, page.url)
+        self._ensure_conversation_response(thread_url, page.url)
 
         form, endpoint = self._extract_reply_form(page.text, page.url)
         if form is None or endpoint is None:
@@ -322,6 +323,42 @@ class Dota2ForumClient:
             return json.dumps(data, ensure_ascii=False)
 
         raise MessageSendError(f"Forum rejected conversation message: {data}")
+
+    def create_conversation(self, recipient_user_id: int, title: str, content: str) -> dict:
+        if recipient_user_id <= 0:
+            raise MessageSendError(f"Invalid conversation recipient user id: {recipient_user_id}")
+        if not title.strip():
+            raise MessageSendError("Conversation title is empty.")
+        if not content.strip():
+            raise MessageSendError("Conversation content is empty.")
+
+        response = self._request(
+            urljoin(self.base_url, "/forum/api/message/createConversationNew"),
+            method="POST",
+            json_data={
+                "title": title.strip(),
+                "content": content.strip(),
+                "recipients": [recipient_user_id],
+            },
+            headers={
+                "Origin": self.base_url,
+                "Referer": urljoin(self.base_url, "/forum/conversation/start/"),
+                "X-Requested-With": "XMLHttpRequest",
+            },
+        )
+
+        try:
+            data = json.loads(response.text)
+        except json.JSONDecodeError as exc:
+            raise MessageSendError(
+                f"Conversation create returned non-JSON response. HTTP {response.status}: {response.text[:300]}"
+            ) from exc
+
+        status = data.get("status")
+        if status in {"success", "ok"}:
+            return data
+
+        raise MessageSendError(f"Forum rejected conversation creation: {data}")
 
     def _send_topic_reply(self, page_url: str, topic_id: int, message: str) -> str:
         response = self._request(
@@ -533,6 +570,13 @@ class Dota2ForumClient:
             return None
         return int(match.group(1))
 
+    @staticmethod
+    def _extract_conversation_id_from_url(url: str) -> int | None:
+        match = re.search(r"(?:/forum)?/conversation/(?:[^/]*\.)?(\d+)(?:/|$|[?#])", url or "")
+        if not match:
+            return None
+        return int(match.group(1))
+
     def _ensure_thread_response(self, requested_url: str, final_url: str) -> None:
         requested_topic_id = self._extract_thread_id_from_url(requested_url)
         if requested_topic_id is None:
@@ -542,6 +586,19 @@ class Dota2ForumClient:
         if final_topic_id != requested_topic_id:
             raise MessageSendError(
                 f"Thread URL {requested_url} redirected to unexpected page {final_url}."
+            )
+
+    def _ensure_conversation_response(self, requested_url: str, final_url: str) -> None:
+        requested_conversation_id = self._extract_conversation_id_from_url(requested_url)
+        if requested_conversation_id is None:
+            return
+
+        final_conversation_id = self._extract_conversation_id_from_url(final_url)
+        if final_conversation_id != requested_conversation_id:
+            raise MessageSendError(
+                f"Conversation URL {requested_url} redirected to unexpected page {final_url}. "
+                "Check that DOTA2_FORUM_TEST_CONVERSATION_URL points to an existing conversation "
+                "available to this bot account."
             )
 
     def _resolve_message_field_name(self, form: ParsedForm) -> str:
