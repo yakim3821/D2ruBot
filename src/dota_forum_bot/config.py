@@ -44,6 +44,7 @@ class Settings:
     deepseek_base_url: str
     summary_test_conversation_url: str | None
     test_conversation_url: str | None
+    deleted_topics_conversation_urls: list[str]
     test_thread_url: str | None
     test_message: str | None
 
@@ -71,6 +72,18 @@ class Settings:
             "DOTA2_FORUM_TEST_CONVERSATION_URL",
             "",
         ).strip() or None
+        deleted_topics_urls_raw = os.getenv(
+            "DOTA2_FORUM_DELETED_TOPICS_CONVERSATION_URLS",
+            (
+                "https://dota2.ru/forum/conversation/udalennye-soobschenija-taverny.1040790/,"
+                "https://dota2.ru/forum/conversation/udalennye-soobschenija-taverny.1040791/"
+            ),
+        )
+        deleted_topics_conversation_urls = [
+            item.strip()
+            for item in deleted_topics_urls_raw.replace("\n", ",").split(",")
+            if item.strip()
+        ]
         test_thread_url = os.getenv("DOTA2_FORUM_TEST_THREAD_URL", "").strip() or None
         test_message = os.getenv("DOTA2_FORUM_TEST_MESSAGE", "").strip() or None
 
@@ -90,6 +103,7 @@ class Settings:
             deepseek_base_url=deepseek_base_url,
             summary_test_conversation_url=summary_test_conversation_url,
             test_conversation_url=test_conversation_url,
+            deleted_topics_conversation_urls=deleted_topics_conversation_urls,
             test_thread_url=test_thread_url,
             test_message=test_message,
         )

@@ -96,11 +96,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     deleted_topics_send_parser = subparsers.add_parser(
-        "send-deleted-topics-followers",
-        help="Create per-subscriber conversations and send deleted Taverna topics to bot followers.",
+        "send-deleted-topics-conversations",
+        help="Send deleted Taverna topics to configured conversation URLs.",
     )
-    deleted_topics_send_parser.add_argument("--subscriber-limit", type=int, default=100, help="Maximum subscribers to process.")
-    deleted_topics_send_parser.add_argument("--topic-limit", type=int, default=10, help="Maximum deleted topics to send per subscriber.")
+    deleted_topics_send_parser.add_argument(
+        "--conversation-url",
+        action="append",
+        default=[],
+        help="Conversation URL. Can be passed multiple times. Defaults to DOTA2_FORUM_DELETED_TOPICS_CONVERSATION_URLS.",
+    )
+    deleted_topics_send_parser.add_argument("--topic-limit", type=int, default=10, help="Maximum deleted topics to send per conversation.")
     deleted_topics_send_parser.add_argument(
         "--deletion-scan-limit",
         type=int,
@@ -113,19 +118,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=1200,
         help="Maximum characters of starter post text to include per topic.",
     )
-    deleted_topics_send_parser.add_argument(
-        "--no-sync-followers",
-        action="store_true",
-        help="Use subscribers already stored in DB without reparsing the followers page.",
-    )
 
     deleted_topics_worker_parser = subparsers.add_parser(
         "run-deleted-topics-worker",
-        help="Run a background worker that sends deleted Taverna topics to bot followers.",
+        help="Run a background worker that sends deleted Taverna topics to configured conversation URLs.",
     )
     deleted_topics_worker_parser.add_argument("--interval", type=int, default=1800, help="Seconds between cycles.")
-    deleted_topics_worker_parser.add_argument("--subscriber-limit", type=int, default=100, help="Maximum subscribers to process per cycle.")
-    deleted_topics_worker_parser.add_argument("--topic-limit", type=int, default=10, help="Maximum deleted topics to send per subscriber per cycle.")
+    deleted_topics_worker_parser.add_argument(
+        "--conversation-url",
+        action="append",
+        default=[],
+        help="Conversation URL. Can be passed multiple times. Defaults to DOTA2_FORUM_DELETED_TOPICS_CONVERSATION_URLS.",
+    )
+    deleted_topics_worker_parser.add_argument("--topic-limit", type=int, default=10, help="Maximum deleted topics to send per conversation per cycle.")
     deleted_topics_worker_parser.add_argument(
         "--deletion-scan-limit",
         type=int,
@@ -435,29 +440,30 @@ def main() -> int:
             )
             for detail in result.details:
                 print(detail)
-        elif args.command == "send-deleted-topics-followers":
-            result = service.send_deleted_topics_to_followers(
-                subscriber_limit=args.subscriber_limit,
+        elif args.command == "send-deleted-topics-conversations":
+            conversation_urls = args.conversation_url or settings.deleted_topics_conversation_urls
+            result = service.send_deleted_topics_to_conversations(
+                conversation_urls=conversation_urls,
                 topic_limit=args.topic_limit,
                 content_limit=args.content_limit,
                 deletion_scan_limit=args.deletion_scan_limit,
-                sync_followers=not args.no_sync_followers,
             )
             print(
-                f"Deleted topic follower delivery finished: subscribers={result.subscribers}, "
-                f"conversations_created={result.conversations_created}, sent={result.sent}, failed={result.failed}"
+                f"Deleted topic conversation delivery finished: targets={result.targets}, "
+                f"sent={result.sent}, failed={result.failed}"
             )
             for detail in result.details:
                 print(detail)
         elif args.command == "run-deleted-topics-worker":
+            conversation_urls = args.conversation_url or settings.deleted_topics_conversation_urls
             print(
                 f"Deleted topics worker started: interval={args.interval}s, "
-                f"subscriber_limit={args.subscriber_limit}, topic_limit={args.topic_limit}, "
+                f"targets={len(conversation_urls)}, topic_limit={args.topic_limit}, "
                 f"deletion_scan_limit={args.deletion_scan_limit}"
             )
             service.run_deleted_topics_worker(
+                conversation_urls=conversation_urls,
                 poll_interval_seconds=args.interval,
-                subscriber_limit=args.subscriber_limit,
                 topic_limit=args.topic_limit,
                 content_limit=args.content_limit,
                 deletion_scan_limit=args.deletion_scan_limit,

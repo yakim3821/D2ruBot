@@ -892,6 +892,27 @@ class Database:
         """
         return self._fetch_all(sql, (subscriber_user_id, limit))
 
+    def get_deleted_topics_pending_conversation_delivery(
+        self,
+        conversation_url: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        sql = """
+        SELECT t.forum_topic_id, t.title, t.topic_url, t.deleted_at, t.deletion_reason
+        FROM topics t
+        WHERE COALESCE(t.is_deleted, FALSE) = TRUE
+          AND NOT EXISTS (
+              SELECT 1
+              FROM deleted_topic_conversation_deliveries d
+              WHERE d.conversation_url = %s
+                AND d.forum_topic_id = t.forum_topic_id
+                AND d.status = 'sent'
+          )
+        ORDER BY t.deleted_at DESC NULLS LAST, t.first_seen_at DESC
+        LIMIT %s
+        """
+        return self._fetch_all(sql, (conversation_url, limit))
+
     def add_topic_monitor_delivery(
         self,
         subscriber_user_id: int,
@@ -971,6 +992,45 @@ class Database:
                 subscriber_user_id,
                 forum_topic_id,
                 conversation_url,
+                status,
+                message_text,
+                error_message,
+                status,
+            ),
+        )
+
+    def add_deleted_topic_conversation_delivery(
+        self,
+        conversation_url: str,
+        forum_topic_id: int,
+        status: str,
+        message_text: str,
+        error_message: str | None = None,
+    ) -> None:
+        sql = """
+        INSERT INTO deleted_topic_conversation_deliveries (
+            conversation_url,
+            forum_topic_id,
+            status,
+            message_text,
+            error_message,
+            created_at,
+            updated_at,
+            sent_at
+        )
+        VALUES (%s, %s, %s, %s, %s, NOW(), NOW(), CASE WHEN %s = 'sent' THEN NOW() ELSE NULL END)
+        ON CONFLICT (conversation_url, forum_topic_id) DO UPDATE
+        SET status = EXCLUDED.status,
+            message_text = EXCLUDED.message_text,
+            error_message = EXCLUDED.error_message,
+            updated_at = NOW(),
+            sent_at = CASE WHEN EXCLUDED.status = 'sent' THEN NOW() ELSE deleted_topic_conversation_deliveries.sent_at END
+        """
+        self._execute(
+            sql,
+            (
+                conversation_url,
+                forum_topic_id,
                 status,
                 message_text,
                 error_message,
@@ -1772,6 +1832,24 @@ class Database:
             """
             CREATE INDEX IF NOT EXISTS idx_deleted_topic_monitor_deliveries_subscriber_status
             ON deleted_topic_monitor_deliveries (subscriber_user_id, status, updated_at DESC)
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS deleted_topic_conversation_deliveries (
+                id BIGSERIAL PRIMARY KEY,
+                conversation_url TEXT NOT NULL,
+                forum_topic_id BIGINT NOT NULL REFERENCES topics(forum_topic_id) ON DELETE CASCADE,
+                status TEXT NOT NULL,
+                message_text TEXT NOT NULL,
+                error_message TEXT,
+                sent_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (conversation_url, forum_topic_id)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_deleted_topic_conversation_deliveries_url_status
+            ON deleted_topic_conversation_deliveries (conversation_url, status, updated_at DESC)
             """,
             """
             INSERT INTO topic_generation_prompts (

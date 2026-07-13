@@ -229,6 +229,19 @@ CREATE TABLE IF NOT EXISTS deleted_topic_monitor_deliveries (
     UNIQUE (subscriber_user_id, forum_topic_id)
 );
 
+CREATE TABLE IF NOT EXISTS deleted_topic_conversation_deliveries (
+    id BIGSERIAL PRIMARY KEY,
+    conversation_url TEXT NOT NULL,
+    forum_topic_id BIGINT NOT NULL REFERENCES topics(forum_topic_id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    message_text TEXT NOT NULL,
+    error_message TEXT,
+    sent_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (conversation_url, forum_topic_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_topics_reply_flags
     ON topics (bot_replied_once, first_seen_at DESC);
 
@@ -252,6 +265,9 @@ CREATE INDEX IF NOT EXISTS idx_topic_monitor_deliveries_subscriber_status
 
 CREATE INDEX IF NOT EXISTS idx_deleted_topic_monitor_deliveries_subscriber_status
     ON deleted_topic_monitor_deliveries (subscriber_user_id, status, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_deleted_topic_conversation_deliveries_url_status
+    ON deleted_topic_conversation_deliveries (conversation_url, status, updated_at DESC);
 
 INSERT INTO scan_state (scope, last_scan_at)
 VALUES ('forum_section:taverna', NULL)

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import html
 import time
@@ -85,6 +85,14 @@ class FollowersSyncResult:
 class SubscriberMonitorSendResult:
     subscribers: int
     conversations_created: int
+    sent: int
+    failed: int
+    details: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DeletedTopicConversationSendResult:
+    targets: int
     sent: int
     failed: int
     details: list[str] = field(default_factory=list)
@@ -1439,18 +1447,17 @@ class ForumSyncService:
 
         return DeletedTopicsScanResult(checked=checked, deleted=deleted, failed=failed, details=details)
 
-    def send_deleted_topics_to_followers(
+    def send_deleted_topics_to_conversations(
         self,
-        subscriber_limit: int = 100,
+        conversation_urls: list[str],
         topic_limit: int = 10,
         content_limit: int = 1200,
         deletion_scan_limit: int = 100,
-        sync_followers: bool = True,
-    ) -> SubscriberMonitorSendResult:
+    ) -> DeletedTopicConversationSendResult:
         details: list[str] = []
-        if sync_followers:
-            sync_result = self.sync_topic_monitor_followers()
-            details.extend(sync_result.details)
+        targets = self._normalize_conversation_urls(conversation_urls)
+        if not targets:
+            raise ForumBotError("At least one deleted topics conversation URL must be configured.")
 
         scan_result = self.scan_deleted_taverna_topics(limit=deletion_scan_limit)
         details.append(
@@ -1459,68 +1466,58 @@ class ForumSyncService:
         )
         details.extend(scan_result.details)
 
-        subscribers = self.db.get_active_topic_monitor_subscribers(limit=subscriber_limit)
-        conversations_created = 0
         sent = 0
         failed = 0
 
-        for subscriber in subscribers:
-            subscriber_user_id = int(subscriber["forum_user_id"])
-            username = str(subscriber.get("username") or subscriber_user_id)
+        for conversation_url in targets:
             try:
-                topics = self.db.get_deleted_topics_pending_monitor_delivery(
-                    subscriber_user_id=subscriber_user_id,
+                topics = self.db.get_deleted_topics_pending_conversation_delivery(
+                    conversation_url=conversation_url,
                     limit=topic_limit,
                 )
                 entries = self._collect_deleted_topic_monitor_entries(topics)
                 if not entries:
-                    details.append(f"{username}: no deleted topics pending delivery.")
+                    details.append(f"{conversation_url}: no deleted topics pending delivery.")
                     continue
 
                 message = self._build_deleted_topic_monitor_message(entries, content_limit=content_limit)
-                conversation = self.db.get_subscriber_deleted_topics_conversation(subscriber_user_id)
-                if conversation is None:
-                    title = "Удаленные сообщения таверны"
-                    created = self.client.create_conversation(
-                        recipient_user_id=subscriber_user_id,
-                        title=title,
-                        content=message,
-                    )
-                    conversation_url = self._extract_created_conversation_url(created)
-                    conversation_id = self._extract_created_conversation_id(created, conversation_url)
-                    self.db.upsert_subscriber_deleted_topics_conversation(
-                        subscriber_user_id=subscriber_user_id,
-                        conversation_url=conversation_url,
-                        conversation_id=conversation_id,
-                        title=title,
-                    )
-                    conversations_created += 1
-                else:
-                    conversation_url = str(conversation["conversation_url"])
-                    self.client.send_message_to_thread(conversation_url, message)
+                self.client.send_message_to_thread(conversation_url, message)
 
                 for entry in entries:
-                    self.db.add_deleted_topic_monitor_delivery(
-                        subscriber_user_id=subscriber_user_id,
-                        forum_topic_id=int(entry["forum_topic_id"]),
+                    self.db.add_deleted_topic_conversation_delivery(
                         conversation_url=conversation_url,
+                        forum_topic_id=int(entry["forum_topic_id"]),
                         status="sent",
                         message_text=message,
                     )
-                sent += 1
-                details.append(f"{username}: sent {len(entries)} deleted topics to {conversation_url}")
+                sent += len(entries)
+                details.append(f"{conversation_url}: sent {len(entries)} deleted topics.")
                 time.sleep(10)
             except Exception as exc:
                 failed += 1
-                details.append(f"{username}: failed to send deleted topic monitor output: {exc}")
+                details.append(f"{conversation_url}: failed to send deleted topic output: {exc}")
 
-        return SubscriberMonitorSendResult(
-            subscribers=len(subscribers),
-            conversations_created=conversations_created,
+        return DeletedTopicConversationSendResult(
+            targets=len(targets),
             sent=sent,
             failed=failed,
             details=details,
         )
+
+    @staticmethod
+    def _normalize_conversation_urls(conversation_urls: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for raw_url in conversation_urls:
+            url = (raw_url or "").strip()
+            if not url:
+                continue
+            normalized = url.rstrip("/") + "/"
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            result.append(normalized)
+        return result
 
     def _collect_deleted_topic_monitor_entries(self, topics: list[dict[str, object]]) -> list[dict[str, object]]:
         entries: list[dict[str, object]] = []
@@ -1574,8 +1571,8 @@ class ForumSyncService:
 
     def run_deleted_topics_worker(
         self,
+        conversation_urls: list[str],
         poll_interval_seconds: int = 1800,
-        subscriber_limit: int = 100,
         topic_limit: int = 10,
         content_limit: int = 1200,
         deletion_scan_limit: int = 100,
@@ -1590,17 +1587,15 @@ class ForumSyncService:
             cycle += 1
             try:
                 log(f"Deleted topics cycle #{cycle}: started.")
-                result = self.send_deleted_topics_to_followers(
-                    subscriber_limit=subscriber_limit,
+                result = self.send_deleted_topics_to_conversations(
+                    conversation_urls=conversation_urls,
                     topic_limit=topic_limit,
                     content_limit=content_limit,
                     deletion_scan_limit=deletion_scan_limit,
-                    sync_followers=True,
                 )
                 log(
                     f"Deleted topics cycle #{cycle}: finished, "
-                    f"subscribers={result.subscribers}, created={result.conversations_created}, "
-                    f"sent={result.sent}, failed={result.failed}."
+                    f"targets={result.targets}, sent={result.sent}, failed={result.failed}."
                 )
                 for detail in result.details:
                     log(f"  {detail}")
@@ -2910,3 +2905,4 @@ class ForumSyncService:
             except Exception as exc:
                 log(f"Daily avatar cycle #{cycle} failed: {exc}")
                 sleep_interval(f"Daily avatar cycle #{cycle}: retrying after failure.")
+
