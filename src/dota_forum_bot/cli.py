@@ -64,12 +64,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     taverna_topics_test_parser.add_argument("--limit", type=int, default=10, help="Maximum number of topics to send.")
     taverna_topics_test_parser.add_argument(
-        "--content-limit",
-        type=int,
-        default=1200,
-        help="Maximum characters of starter post text to include per topic.",
-    )
-    taverna_topics_test_parser.add_argument(
         "--conversation-url",
         help="Absolute conversation URL where the topic monitor output should be sent.",
     )
@@ -97,12 +91,6 @@ def build_parser() -> argparse.ArgumentParser:
     followers_send_parser.add_argument("--subscriber-limit", type=int, default=100, help="Maximum subscribers to process.")
     followers_send_parser.add_argument("--topic-limit", type=int, default=10, help="Maximum topics to send per subscriber.")
     followers_send_parser.add_argument(
-        "--content-limit",
-        type=int,
-        default=1200,
-        help="Maximum characters of starter post text to include per topic.",
-    )
-    followers_send_parser.add_argument(
         "--no-sync-followers",
         action="store_true",
         help="Use subscribers already stored in DB without reparsing the followers page.",
@@ -125,12 +113,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=100,
         help="Maximum stored Taverna topics to check for deletion before sending.",
     )
-    deleted_topics_send_parser.add_argument(
-        "--content-limit",
-        type=int,
-        default=1200,
-        help="Maximum characters of starter post text to include per topic.",
-    )
 
     deleted_topics_worker_parser = subparsers.add_parser(
         "run-deleted-topics-worker",
@@ -149,12 +131,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=100,
         help="Maximum stored Taverna topics to check for deletion per cycle.",
-    )
-    deleted_topics_worker_parser.add_argument(
-        "--content-limit",
-        type=int,
-        default=1200,
-        help="Maximum characters of starter post text to include per topic.",
     )
 
     publish_topics_parser = subparsers.add_parser(
@@ -428,7 +404,6 @@ def main() -> int:
             result = service.send_taverna_topics_test_message(
                 conversation_url=conversation_url,
                 limit=args.limit,
-                content_limit=args.content_limit,
             )
             print(
                 f"Taverna topics test finished: scanned={result.scanned}, "
@@ -453,7 +428,6 @@ def main() -> int:
             result = service.send_topic_monitor_to_followers(
                 subscriber_limit=args.subscriber_limit,
                 topic_limit=args.topic_limit,
-                content_limit=args.content_limit,
                 sync_followers=not args.no_sync_followers,
             )
             print(
@@ -467,7 +441,6 @@ def main() -> int:
             result = service.send_deleted_topics_to_conversations(
                 conversation_urls=conversation_urls,
                 topic_limit=args.topic_limit,
-                content_limit=args.content_limit,
                 deletion_scan_limit=args.deletion_scan_limit,
             )
             print(
@@ -487,7 +460,6 @@ def main() -> int:
                 conversation_urls=conversation_urls,
                 poll_interval_seconds=args.interval,
                 topic_limit=args.topic_limit,
-                content_limit=args.content_limit,
                 deletion_scan_limit=args.deletion_scan_limit,
             )
         elif args.command == "publish-drafted-topics":

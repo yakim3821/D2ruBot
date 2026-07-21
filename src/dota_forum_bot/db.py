@@ -687,7 +687,9 @@ class Database:
             t.forum_topic_id,
             t.title,
             t.topic_url,
+            t.author_user_id,
             u.username AS author_username,
+            u.profile_url AS author_profile_url,
             p.forum_post_id,
             p.content_raw,
             p.content_text

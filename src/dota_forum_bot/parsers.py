@@ -515,7 +515,7 @@ def extract_quoted_text(raw_html: str) -> str:
 
 
 def extract_post_message_text(raw_html: str) -> str:
-    text = _normalize_space(_html_to_text(_remove_blockquotes_html(raw_html)))
+    text = _normalize_message_text(_html_to_forum_message_text(_remove_blockquotes_html(raw_html)))
     return _cleanup_post_message_artifacts(text)
 
 
@@ -735,6 +735,184 @@ def _html_to_text(raw_html: str) -> str:
     return _normalize_space(html.unescape(text.replace("\xa0", " ")))
 
 
+def _html_to_forum_message_text(raw_html: str) -> str:
+    parser = _ForumMessageHTMLToTextParser()
+    parser.feed(raw_html or "")
+    parser.close()
+    return parser.text()
+
+
+class _ForumMessageHTMLToTextParser(HTMLParser):
+    _BLOCK_TAGS = {
+        "blockquote",
+        "div",
+        "li",
+        "ol",
+        "p",
+        "table",
+        "tbody",
+        "td",
+        "th",
+        "thead",
+        "tr",
+        "ul",
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.parts: list[str] = []
+        self.element_stack: list[str] = []
+        self.spoilers: list[dict[str, object]] = []
+        self.spoiler_title_capture: dict[str, object] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        normalized_tag = tag.lower()
+        attr_map = {key.lower(): (value or "") for key, value in attrs}
+        classes = attr_map.get("class", "").lower()
+
+        if normalized_tag == "div" and self._is_spoiler(classes):
+            self.element_stack.append(normalized_tag)
+            self._append_boundary()
+            self.spoilers.append({"depth": len(self.element_stack), "title": "", "opened": False})
+            return
+
+        self.element_stack.append(normalized_tag)
+
+        if self.spoilers:
+            if "spoiler-btn" in classes:
+                self.spoiler_title_capture = {"depth": len(self.element_stack), "parts": []}
+                return
+            if "spoiler-content" in classes:
+                self._open_current_spoiler()
+                return
+
+        if normalized_tag == "br":
+            self.parts.append("\n")
+            return
+        if normalized_tag == "img":
+            self._append_image(attr_map)
+            return
+        if normalized_tag in self._BLOCK_TAGS:
+            self._append_boundary()
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        normalized_tag = tag.lower()
+        attr_map = {key.lower(): (value or "") for key, value in attrs}
+        if normalized_tag == "br":
+            self.parts.append("\n")
+            return
+        if normalized_tag == "img":
+            self._append_image(attr_map)
+
+    def handle_endtag(self, tag: str) -> None:
+        normalized_tag = tag.lower()
+        current_depth = len(self.element_stack)
+        if self.spoiler_title_capture is not None and current_depth < int(self.spoiler_title_capture["depth"]):
+            self.spoiler_title_capture = None
+
+        if self.spoilers:
+            top = self.spoilers[-1]
+            if self.spoiler_title_capture is not None and current_depth == int(self.spoiler_title_capture["depth"]):
+                title = _normalize_space("".join(str(part) for part in self.spoiler_title_capture["parts"]))
+                if title:
+                    top["title"] = title
+                self.spoiler_title_capture = None
+
+            if normalized_tag == "div" and current_depth == int(top["depth"]):
+                self._open_current_spoiler()
+                self._append_boundary()
+                self.parts.append("[/SPOILER]")
+                self._append_boundary()
+                self.spoilers.pop()
+
+            self._pop_element(normalized_tag)
+            return
+
+        if normalized_tag in self._BLOCK_TAGS:
+            self._append_boundary()
+        self._pop_element(normalized_tag)
+
+    def handle_data(self, data: str) -> None:
+        if self.spoiler_title_capture is not None:
+            self.spoiler_title_capture["parts"].append(data)
+            return
+        self.parts.append(data)
+
+    def handle_entityref(self, name: str) -> None:
+        self.handle_data(f"&{name};")
+
+    def handle_charref(self, name: str) -> None:
+        self.handle_data(f"&#{name};")
+
+    def text(self) -> str:
+        while self.spoilers:
+            self._open_current_spoiler()
+            self._append_boundary()
+            self.parts.append("[/SPOILER]")
+            self._append_boundary()
+            self.spoilers.pop()
+        return html.unescape("".join(self.parts).replace("\xa0", " "))
+
+    @staticmethod
+    def _is_spoiler(classes: str) -> bool:
+        return "spoiler" in classes.split()
+
+    def _open_current_spoiler(self) -> None:
+        if not self.spoilers:
+            return
+        top = self.spoilers[-1]
+        if bool(top["opened"]):
+            return
+        title = _normalize_space(str(top["title"] or "")) or "Спойлер"
+        self._append_boundary()
+        self.parts.append(f'[SPOILER="{_escape_bbcode_attribute(title)}"]')
+        self._append_boundary()
+        top["opened"] = True
+
+    def _append_image(self, attr_map: dict[str, str]) -> None:
+        if attr_map.get("data-smile") == "1":
+            shortcut = attr_map.get("data-shortcut") or attr_map.get("title") or ""
+            if shortcut:
+                self.parts.append(shortcut)
+            return
+
+        url = attr_map.get("src") or attr_map.get("data-src")
+        if not url:
+            return
+        self._append_boundary()
+        self.parts.append(f"[IMG]{_to_absolute_url(url)}[/IMG]")
+        self._append_boundary()
+
+    def _append_boundary(self) -> None:
+        if self.parts and not str(self.parts[-1]).endswith(("\n", " ")):
+            self.parts.append("\n")
+
+    def _pop_element(self, tag: str) -> None:
+        if not self.element_stack:
+            return
+        if self.element_stack[-1] == tag:
+            self.element_stack.pop()
+            return
+        try:
+            index = len(self.element_stack) - 1 - self.element_stack[::-1].index(tag)
+        except ValueError:
+            self.element_stack.pop()
+            return
+        del self.element_stack[index:]
+
+
+def _escape_bbcode_attribute(value: str) -> str:
+    return value.replace('"', "'").strip()
+
+
+def _normalize_message_text(value: str) -> str:
+    text = value.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 class _QuoteHTMLExtractor(HTMLParser):
     _QUOTE_META_MARKERS = (
         "quoteexpand",
@@ -858,7 +1036,7 @@ def _cleanup_post_message_artifacts(value: str) -> str:
     text = value.strip()
     text = re.sub(r"^.+?\s+сказал\(а\):\s*↑?\s*", "", text, flags=re.IGNORECASE | re.DOTALL)
     text = re.sub(r"\bНажмите,\s*чтобы\s*раскрыть\.{0,3}\b", "", text, flags=re.IGNORECASE)
-    return _normalize_space(text)
+    return _normalize_message_text(text)
 
 
 def _extract_topic_thread_posts(topic_id: int, html_text: str) -> list[TopicThreadPostRecord]:

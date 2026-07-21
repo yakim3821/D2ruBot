@@ -1305,7 +1305,6 @@ class ForumSyncService:
         self,
         conversation_url: str,
         limit: int = 10,
-        content_limit: int = 1200,
     ) -> TopicMonitorTestResult:
         scan_result = self.scan_taverna()
         topics = self.db.get_topics_pending_monitor_test(limit=limit)
@@ -1353,7 +1352,7 @@ class ForumSyncService:
                 details=details,
             )
 
-        message = self._build_topic_monitor_message(entries, content_limit=content_limit)
+        message = self._build_topic_monitor_message(entries)
         try:
             self.client.send_message_to_thread(conversation_url, message)
             for entry in entries:
@@ -1385,18 +1384,83 @@ class ForumSyncService:
             )
 
     @classmethod
-    def _build_topic_monitor_message(cls, topics: list[dict[str, object]], content_limit: int = 1200) -> str:
+    def _build_topic_monitor_message(cls, topics: list[dict[str, object]]) -> str:
         blocks: list[str] = []
         for topic in topics:
             title = str(topic.get("title") or "").strip() or f"Topic {topic.get('forum_topic_id')}"
-            author = str(topic.get("author_username") or "").strip() or "Unknown"
-            content = cls._trim_text(str(topic.get("content_text") or "").strip(), content_limit)
-            blocks.append(f'[SPOILER="{cls._escape_bbcode_attribute(title)}"]\n{author}\n\n{content}\n[/SPOILER]')
+            content = cls._topic_monitor_content(topic)
+            header = cls._build_topic_monitor_header(topic, include_reason=False)
+            blocks.append(
+                f'[SPOILER="{cls._escape_bbcode_attribute(title)}"]\n\n'
+                f"{header}<br>\n"
+                "----------------------------------------------<br>\n"
+                f"{content}\n\n"
+                "[/SPOILER]"
+            )
         return "\n".join(blocks).strip()
 
     @staticmethod
     def _escape_bbcode_attribute(value: str) -> str:
         return value.replace('"', "'").strip()
+
+    @staticmethod
+    def _topic_monitor_content(topic: dict[str, object]) -> str:
+        raw = str(topic.get("content_raw") or "").strip()
+        if raw:
+            parsed = extract_post_message_text(raw)
+            if parsed:
+                return parsed
+        return str(topic.get("content_text") or "").strip()
+
+    @classmethod
+    def _build_topic_monitor_header(cls, topic: dict[str, object], include_reason: bool) -> str:
+        author_name = str(topic.get("author_username") or "").strip() or "Unknown"
+        author_profile_url = str(topic.get("author_profile_url") or "").strip()
+        author_user_id = cls._optional_int(topic.get("author_user_id"))
+        if not author_profile_url and author_user_id is not None:
+            author_profile_url = f"https://dota2.ru/forum/members/{author_name.lower()}.{author_user_id}/"
+
+        author_html = html.escape(author_name)
+        if author_profile_url:
+            author_html = (
+                f'<a href="{html.escape(author_profile_url, quote=True)}">'
+                f"{html.escape(author_name)}</a>"
+            )
+
+        lines = [f"Author: {author_html};"]
+
+        avatar_url = cls._author_avatar_url(author_user_id)
+        if avatar_url:
+            lines.append(
+                f'<img width="150" height="150" alt="{author_user_id}.jpg" '
+                f'src="{html.escape(avatar_url, quote=True)}">'
+            )
+
+        topic_url = str(topic.get("topic_url") or "").strip()
+        if topic_url:
+            escaped_url = html.escape(topic_url, quote=True)
+            lines.append(f'Original URL: <a href="{escaped_url}">{html.escape(topic_url)}</a>;')
+
+        if include_reason:
+            reason = str(topic.get("deletion_reason") or "").strip()
+            if reason:
+                lines.append(f"Reason: {html.escape(reason)};")
+
+        return "<br>\n".join(lines)
+
+    @staticmethod
+    def _author_avatar_url(author_user_id: int | None) -> str | None:
+        if author_user_id is None or author_user_id <= 0:
+            return None
+        avatar_dir = author_user_id // 1000
+        return f"https://dota2.ru/img/forum/avatars/l/{avatar_dir}/{author_user_id}.jpg"
+
+    @staticmethod
+    def _optional_int(value: object) -> int | None:
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
 
     def sync_topic_monitor_followers(self, followers_url: str = BOT_PROFILE_FOLLOWERS_URL) -> FollowersSyncResult:
         response = self._fetch_page_or_raise(followers_url, context="bot followers page")
@@ -1415,7 +1479,6 @@ class ForumSyncService:
         self,
         subscriber_limit: int = 100,
         topic_limit: int = 10,
-        content_limit: int = 1200,
         sync_followers: bool = True,
     ) -> SubscriberMonitorSendResult:
         details: list[str] = []
@@ -1447,7 +1510,7 @@ class ForumSyncService:
                     details.append(f"{username}: no topics pending delivery.")
                     continue
 
-                message = self._build_topic_monitor_message(entries, content_limit=content_limit)
+                message = self._build_topic_monitor_message(entries)
                 conversation = self.db.get_subscriber_conversation(subscriber_user_id)
                 if conversation is None:
                     title = "Taverna topic monitor"
@@ -1525,7 +1588,6 @@ class ForumSyncService:
         self,
         conversation_urls: list[str],
         topic_limit: int = 10,
-        content_limit: int = 1200,
         deletion_scan_limit: int = 100,
     ) -> DeletedTopicConversationSendResult:
         details: list[str] = []
@@ -1554,7 +1616,7 @@ class ForumSyncService:
                     details.append(f"{conversation_url}: no deleted topics pending delivery.")
                     continue
 
-                message = self._build_deleted_topic_monitor_message(entries, content_limit=content_limit)
+                message = self._build_deleted_topic_monitor_message(entries)
                 self.client.send_message_to_thread(conversation_url, message)
 
                 for entry in entries:
@@ -1609,24 +1671,20 @@ class ForumSyncService:
         return entries
 
     @classmethod
-    def _build_deleted_topic_monitor_message(cls, topics: list[dict[str, object]], content_limit: int = 1200) -> str:
+    def _build_deleted_topic_monitor_message(cls, topics: list[dict[str, object]]) -> str:
         blocks: list[str] = []
         for topic in topics:
             title = str(topic.get("title") or "").strip() or f"Topic {topic.get('forum_topic_id')}"
-            author = str(topic.get("author_username") or "").strip() or "Unknown"
-            topic_url = str(topic.get("topic_url") or "").strip()
-            content = cls._trim_text(str(topic.get("content_text") or "").strip(), content_limit)
+            content = cls._topic_monitor_content(topic)
             if not content:
                 content = "Starter post was not saved before the topic became unavailable."
-            header_lines = [f"Author: {author}"]
-            if topic_url:
-                header_lines.append(f"Original URL: {topic_url}")
-            reason = str(topic.get("deletion_reason") or "").strip()
-            if reason:
-                header_lines.append(f"Reason: {reason}")
+            header = cls._build_topic_monitor_header(topic, include_reason=True)
             blocks.append(
-                f'[SPOILER="{cls._escape_bbcode_attribute(title)}"]\n'
-                f'{"; ".join(header_lines)}\n\n{content}\n[/SPOILER]'
+                f'[SPOILER="{cls._escape_bbcode_attribute(title)}"]\n\n'
+                f"{header}<br>\n"
+                "----------------------------------------------<br>\n"
+                f"{content}\n\n"
+                "[/SPOILER]"
             )
         return "\n".join(blocks).strip()
 
@@ -1648,7 +1706,6 @@ class ForumSyncService:
         conversation_urls: list[str],
         poll_interval_seconds: int = 1800,
         topic_limit: int = 10,
-        content_limit: int = 1200,
         deletion_scan_limit: int = 100,
     ) -> None:
         cycle = 0
@@ -1664,7 +1721,6 @@ class ForumSyncService:
                 result = self.send_deleted_topics_to_conversations(
                     conversation_urls=conversation_urls,
                     topic_limit=topic_limit,
-                    content_limit=content_limit,
                     deletion_scan_limit=deletion_scan_limit,
                 )
                 log(
