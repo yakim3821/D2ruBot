@@ -4,12 +4,11 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="63386f1a-d5f6-4c51-aa31-f06c006e8555" name="Changes" comment="not c 3">
+    <list default="true" id="63386f1a-d5f6-4c51-aa31-f06c006e8555" name="Changes" comment="not c 4">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/cli.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/cli.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/db.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/db.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/parsers.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/parsers.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/dota_forum_bot/services.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dota_forum_bot/services.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_parsers_and_monitor.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_parsers_and_monitor.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -17,7 +16,7 @@
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
   <component name="EmbeddingIndexingInfo">
-    <option name="cachedIndexableFilesCount" value="3233" />
+    <option name="cachedIndexableFilesCount" value="3234" />
   </component>
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
@@ -110,7 +109,9 @@
       <workItem from="1780901866816" duration="7000" />
       <workItem from="1783973833131" duration="8583000" />
       <workItem from="1784651381922" duration="62000" />
-      <workItem from="1784652921982" duration="2301000" />
+      <workItem from="1784652921982" duration="4617000" />
+      <workItem from="1784673537509" duration="38000" />
+      <workItem from="1785233248141" duration="313000" />
     </task>
     <task id="LOCAL-00001" summary="Start">
       <option name="closed" value="true" />
@@ -440,7 +441,15 @@
       <option name="project" value="LOCAL" />
       <updated>1783981790176</updated>
     </task>
-    <option name="localTasksCounter" value="42" />
+    <task id="LOCAL-00042" summary="not c 4">
+      <option name="closed" value="true" />
+      <created>1784655271500</created>
+      <option name="number" value="00042" />
+      <option name="presentableId" value="LOCAL-00042" />
+      <option name="project" value="LOCAL" />
+      <updated>1784655271500</updated>
+    </task>
+    <option name="localTasksCounter" value="43" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -481,6 +490,7 @@
     <MESSAGE value="not c" />
     <MESSAGE value="not c 2" />
     <MESSAGE value="not c 3" />
-    <option name="LAST_COMMIT_MESSAGE" value="not c 3" />
+    <MESSAGE value="not c 4" />
+    <option name="LAST_COMMIT_MESSAGE" value="not c 4" />
   </component>
 </project>

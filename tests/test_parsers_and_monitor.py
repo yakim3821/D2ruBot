@@ -48,6 +48,17 @@ class PostMessageParsingTests(unittest.TestCase):
         self.assertIn(":lolpoppy:", text)
         self.assertNotIn("[IMG]https://dota2.ru/img/forum/emoticons/poppy.png[/IMG]", text)
 
+    def test_page_tail_is_removed_after_moderation_controls_marker(self) -> None:
+        raw_html = """
+        <p>Actual starter text :PepeLove:</p>
+        <p>Не игнорировать Игнорировать Жалоба Ответить Тема закрыта Отправить Кто смотрит тему</p>
+        <script>Topic.id = 1634508;</script>
+        """
+
+        text = extract_post_message_text(raw_html)
+
+        self.assertEqual("Actual starter text :PepeLove:", text)
+
 
 class TopicMonitorMessageTests(unittest.TestCase):
     def test_topic_monitor_message_does_not_trim_content(self) -> None:
@@ -139,6 +150,45 @@ class TopicMonitorMessageTests(unittest.TestCase):
         self.assertIn('Original URL: <a href="https://dota2.ru/forum/threads/topic.1/">', message)
         self.assertIn("Reason: redirected_to:https://dota2.ru/forum/;", message)
         self.assertIn("----------------------------------------------<br>\nFull post text", message)
+
+    def test_topic_monitor_message_cleans_stored_page_tail(self) -> None:
+        message = ForumSyncService._build_topic_monitor_message(
+            [
+                {
+                    "forum_topic_id": 1,
+                    "title": "Broken stored topic",
+                    "author_username": "Author",
+                    "content_text": (
+                        "Actual starter text Не игнорировать Игнорировать Жалоба "
+                        "Ответить Тема закрыта Отправить $(document).ready(function() {})"
+                    ),
+                }
+            ]
+        )
+
+        self.assertIn("Actual starter text", message)
+        self.assertNotIn("Ответить", message)
+        self.assertNotIn("$(document)", message)
+
+    def test_deleted_topic_monitor_message_cleans_stored_page_tail(self) -> None:
+        message = ForumSyncService._build_deleted_topic_monitor_message(
+            [
+                {
+                    "forum_topic_id": 1,
+                    "title": "Broken deleted topic",
+                    "author_username": "Author",
+                    "topic_url": "https://dota2.ru/forum/threads/deleted.1/",
+                    "content_text": (
+                        "Deleted starter text Не игнорировать Игнорировать Жалоба "
+                        "Ответить Тема закрыта Отправить $(document).ready(function() {})"
+                    ),
+                }
+            ]
+        )
+
+        self.assertIn("Deleted starter text", message)
+        self.assertNotIn("Ответить", message)
+        self.assertNotIn("$(document)", message)
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ from .parsers import (
     PostRecord,
     TopicPageRecord,
     TopicRecord,
+    cleanup_post_message_text,
     extract_post_message_text,
     extract_quoted_text,
     parse_quote_notifications_api,
@@ -1410,7 +1411,7 @@ class ForumSyncService:
             parsed = extract_post_message_text(raw)
             if parsed:
                 return parsed
-        return str(topic.get("content_text") or "").strip()
+        return cleanup_post_message_text(str(topic.get("content_text") or ""))
 
     @classmethod
     def _build_topic_monitor_header(cls, topic: dict[str, object], include_reason: bool) -> str:

@@ -16,6 +16,7 @@ TOPIC_POST_BLOCK_RE = re.compile(
     r'<div\b(?=[^>]*\bid="post-(\d+)")(?=[^>]*\bclass="[^"]*forum-theme__item[^"]*")[^>]*>',
     flags=re.IGNORECASE,
 )
+POST_PAGE_TAIL_MARKER_RE = re.compile(r"\bНе\s+игнорировать\s+Игнорировать\s+Жалоба\b", flags=re.IGNORECASE)
 
 
 @dataclass
@@ -517,6 +518,10 @@ def extract_quoted_text(raw_html: str) -> str:
 def extract_post_message_text(raw_html: str) -> str:
     text = _normalize_message_text(_html_to_forum_message_text(_remove_blockquotes_html(raw_html)))
     return _cleanup_post_message_artifacts(text)
+
+
+def cleanup_post_message_text(value: str) -> str:
+    return _cleanup_post_message_artifacts(value)
 
 
 def parse_quote_notifications_api(notices: list[dict]) -> list[QuoteNotificationRecord]:
@@ -1036,6 +1041,9 @@ def _cleanup_post_message_artifacts(value: str) -> str:
     text = value.strip()
     text = re.sub(r"^.+?\s+сказал\(а\):\s*↑?\s*", "", text, flags=re.IGNORECASE | re.DOTALL)
     text = re.sub(r"\bНажмите,\s*чтобы\s*раскрыть\.{0,3}\b", "", text, flags=re.IGNORECASE)
+    marker_match = POST_PAGE_TAIL_MARKER_RE.search(text)
+    if marker_match:
+        text = text[: marker_match.start()]
     return _normalize_message_text(text)
 
 
